@@ -8,10 +8,11 @@ export default function HomePage() {
           own before you buy. It tells you when it can&apos;t tell.
         </p>
         <p className="hero-sub">
-          One foundation, checked three ways: its colour against your
-          skin, a try-on render shown as a labelled preview, and your
-          shelf, so the answer can be BUY, SHADE-RISK, or NO, with the
-          reason shown. Built on the YouCam API.
+          One foundation, checked against your skin and your shelf,
+          so the answer can be BUY, SHADE-RISK, or NO, with the
+          reason shown. A try-on render is available as a labelled
+          preview only: it is not run in the shipped check flow and
+          never feeds a verdict. Built on the YouCam API.
         </p>
       </section>
 
@@ -19,9 +20,11 @@ export default function HomePage() {
         <h2>How it works</h2>
         <ol>
           <li>
-            <strong>Capture.</strong> A guided photo with lighting and
-            framing checks, plus a colour-cast warning, before any paid
-            API call happens.
+            <strong>Capture.</strong> In fixture mode, pick a study
+            face and a framing scenario; in live mode, upload a photo
+            file and let the browser&apos;s built-in face detector
+            measure it, with a plain refusal where no detector exists.
+            There is no colour-cast warning in the shipped flow.
           </li>
           <li>
             <strong>Colour.</strong> One skin-tone reading, ranked
@@ -29,9 +32,10 @@ export default function HomePage() {
             distance.
           </li>
           <li>
-            <strong>Preview.</strong> The top shades are rendered on
-            your photo so you can look at the blend. The render is a
-            labelled preview only: it never feeds the verdict. Colour
+            <strong>Preview.</strong> Makeup VTO rendering is available
+            as a client function, but it is not run in the shipped
+            check flow: every receipt logs makeup-vto-preview as
+            skipped, and the preview never feeds a verdict. Colour
             distance and the cluster rule decide.
           </li>
           <li>
