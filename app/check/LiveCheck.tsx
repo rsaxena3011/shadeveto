@@ -55,9 +55,17 @@ let mediaPipeDetector: {
     detections: Array<{ boundingBox?: { width?: number } }>;
   }>;
 } | null = null;
-let mediaPipeLoading: Promise<typeof mediaPipeDetector> | null = null;
+let mediaPipeLoading: Promise<{
+  detect: (source: ImageBitmap) => Promise<{
+    detections: Array<{ boundingBox?: { width?: number } }>;
+  }>;
+}> | null = null;
 
-async function loadMediaPipeDetector(): Promise<typeof mediaPipeDetector> {
+async function loadMediaPipeDetector(): Promise<{
+  detect: (source: ImageBitmap) => Promise<{
+    detections: Array<{ boundingBox?: { width?: number } }>;
+  }>;
+}> {
   const vision = await import("@mediapipe/tasks-vision");
   const fileset = await vision.FilesetResolver.forVisionTasks(
     // Must match the installed tasks-vision major version (1.x, see
@@ -72,7 +80,11 @@ async function loadMediaPipeDetector(): Promise<typeof mediaPipeDetector> {
       baseOptions: { modelAssetPath, delegate: "GPU" },
       runningMode: "IMAGE",
       minDetectionConfidence: 0.5,
-    })) as unknown as typeof mediaPipeDetector;
+    })) as unknown as {
+      detect: (source: ImageBitmap) => Promise<{
+        detections: Array<{ boundingBox?: { width?: number } }>;
+      }>;
+    };
   } catch {
     // GPU delegate fails on some Windows Chrome setups: CPU works
     // everywhere, just slower, and this is one photo, not video.
@@ -80,7 +92,11 @@ async function loadMediaPipeDetector(): Promise<typeof mediaPipeDetector> {
       baseOptions: { modelAssetPath, delegate: "CPU" },
       runningMode: "IMAGE",
       minDetectionConfidence: 0.5,
-    })) as unknown as typeof mediaPipeDetector;
+    })) as unknown as {
+      detect: (source: ImageBitmap) => Promise<{
+        detections: Array<{ boundingBox?: { width?: number } }>;
+      }>;
+    };
   }
 }
 
