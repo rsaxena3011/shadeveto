@@ -12,26 +12,32 @@ own the match.
 
 ## How it works
 
-1. **Capture.** A guided photo (lighting, pose, face size) with a
-   colour-cast warning, before any paid API call happens. The photo
-   is shrunk on the device, uploaded once, and its file id is reused
-   by every task.
+1. **Capture.** In fixture mode, pick a study face and a framing
+   scenario; in live mode, upload a photo file and let a
+   face detector measure it in the browser (built-in
+   FaceDetector where present, MediaPipe otherwise), with a
+   plain refusal where no measurement can be made. There is no colour-cast
+   warning in the shipped flow, and no colour-cast reading feeds
+   a verdict. The photo is shrunk on the device, uploaded once,
+   and its file id is reused by every task.
 2. **Colour.** One Skin Tone call returns a skin colour. Candidates
    come from a small, dated, licensed shade catalog and are ranked by
    CIEDE2000 colour distance.
-3. **Preview.** The top candidates are rendered with Makeup VTO
-   (smoothing explicitly off, settings fixed across shades) so the
-   shopper can look at the blend. The render is a labelled preview
-   only: it never feeds the verdict. (An earlier plan measured the
-   blend at the jawline and ranked by it; that metric failed its
+3. **Preview.** Makeup VTO rendering is available as a client
+   function, but it is NOT run in the shipped check flow: every
+   receipt logs makeup-vto-preview as skipped, and the preview
+   never feeds a verdict. (An earlier plan measured the blend at
+   the jawline and ranked by it; that metric failed its
    validation study in October 2026 and was cut.)
-4. **Planner.** A 4-concern Skin Analysis is spent only when it could
-   change the verdict (a borderline colour read, a formula-risk
-   flag). It logs what it spent, skipped, and why.
-5. **Receipt.** BUY / SHADE-RISK / NO (already own it; mix two owned
-   bottles; no shade in range blends; evidence too weak). If a number
-   is missing, the reason falls back to a fixed template instead of
-   inventing precision.
+4. **Planner.** Skin Analysis is not run in the shipped flow. It is
+   logged as skipped on every receipt because its scores carry no
+   verdict authority in this product. The planner log records what
+   was spent, skipped, and why.
+5. **Receipt.** BUY / SHADE-RISK / NO (already own it; no shade in
+   range blends; evidence too weak). No mixing recommendation is
+   made: mixing two owned bottles is an unvalidated physical claim
+   and was cut. If a number is missing, the reason falls back to a
+   fixed template instead of inventing precision.
 
 ## Status
 
@@ -60,7 +66,7 @@ npm run dev
 | Variable | What it is | Where it comes from |
 | --- | --- | --- |
 | `YOUCAM_API_KEY` | Server-side API key. Never exposed to the browser, never committed. | The YouCam console for the India region, https://yce.makeupar.com (sign in, then the API key section of the account). The 1,000 hackathon units were redeemed on this account. |
-| `YOUCAM_API_BASE_URL` | API host. Default `https://yce-api-01.makeupar.com` is UNVERIFIED; a perfectcorp.com host is the other candidate the probe checks. | Confirmed by the day-1 probe. |
+| `YOUCAM_API_BASE_URL` | API host. Default `https://yce-api-01.makeupar.com` is VERIFIED by the 2026-10-22 live probe (see lib/config.ts). | Confirmed by the day-1 probe. |
 | `JUDGE_PASSCODE` | Unlocks judge mode (live calls, may spend the reserve). Without it everyone is public and gets replays only. | Invent a value; set it here and in the deployment's env settings. |
 
 For the Vercel deployment, set the same three variables in the
@@ -77,8 +83,9 @@ design.
 ## Layout
 
 - `app/`: landing page, layout, `/api/health`.
-- `lib/config.ts`: every cost, path, and host in one place, marked
-  UNVERIFIED until the probe settles it.
+- `lib/config.ts`: every cost, path, and host in one place; costs
+  and host verified by the 2026-10-22 probe, except the 5-8 concern
+  Skin Analysis price, which stays UNVERIFIED.
 - `lib/youcam/`: API client (two-step upload, task create + poll,
   typed results). Task creation is never auto-retried: a slow server
   plus a retry can create two tasks and charge twice.
@@ -92,32 +99,48 @@ design.
   fixtures convention (result URLs expire, so images are mirrored at
   capture time).
 
-## Unit budget (UNVERIFIED working figures)
+## Unit budget (planning figures, not measured spend)
 
-Skin Tone 20 per call, Skin Analysis SD 9 (1-4 concerns) or 12
-(5-8), Makeup VTO 1 per render: roughly 30-36 units per full live
-run. Of the 1,000 granted units, about 240 are earmarked for the
-measurement study, about 460 for build and video, and 300 are held
-untouched as the judging reserve, spendable only in judge mode.
-Every figure here is a working number from planning, to be confirmed
-in the console during the probe; the ledger reads the real balance
-through its provider interface rather than trusting this table.
+Verified per-call costs (lib/config.ts, study log 2026-10-22):
+Skin Tone 20, Makeup VTO 1, Skin Analysis 9 at 1-4 concerns.
+Skin Analysis at 5-8 concerns (12) is UNVERIFIED: no live run has
+exercised it. The 240 / 460 / 300 allocation math from planning is
+removed as a budget claim; it was never measured spend. Actual
+balance after the one live smoke run: 867, down from 887, a delta
+of exactly 20, the Skin Tone cost. The ledger reads the real
+balance through its provider interface rather than trusting this
+section.
 
 ## Day-1 probe checklist (before any UI work)
+
+Historical record of the 2026-10-22 probe; items marked [x] are
+verified, items marked [ ] are still open, with the reason stated.
 
 From the India-region account, end to end on one real photo:
 
 - [ ] Confirm the redeemed units' expiry date passes Nov 20, 2026.
-- [ ] Two-step upload works (ticket, presigned PUT, file id).
-- [ ] Skin Tone response schema; confirm there is no undertone field.
-- [ ] Makeup VTO accepts an arbitrary foundation hex; check the
+  (Still open: the console displays no expiry date; see the study
+  log 2026-10-22. Do not claim an expiry.)
+- [x] Two-step upload works (ticket, presigned PUT, file id).
+- [x] Skin Tone response schema; confirm there is no undertone field.
+- [x] Makeup VTO accepts an arbitrary foundation hex; check the
       smoothing default (expected 50, must be set to 0 explicitly).
-- [ ] Skin Analysis SD field list at 4 concerns.
-- [ ] True per-call unit costs from the console, and the real balance
+- [x] Skin Analysis SD field list at 4 concerns.
+- [x] True per-call unit costs from the console, and the real balance
       endpoint (wire it into the ledger's BalanceProvider).
-- [ ] Which API host this key works on (settle YOUCAM_API_BASE_URL).
+      Verified: Skin Tone 20, Makeup VTO 1, Skin Analysis 9 at
+      1-4 concerns; 5-8 concerns (12) unverified.
+- [x] Which API host this key works on (settle YOUCAM_API_BASE_URL).
+      Verified: https://yce-api-01.makeupar.com, live probe
+      2026-10-22 (see lib/config.ts API_PATHS note).
 - [ ] Result/file retention window (settle the fixtures rule).
+  (Still open: not settled by the probe record.)
 - [ ] Camera Kit shadefinder mode loads on the deployed site.
+  (Still open, with a documented reason, not a missing checkbox:
+  the documented Camera Kit API surface exposes no numeric
+  face-share figure that the capture gate needs, so feeding it
+  would fabricate a measurement. BUILD_LOG slice 7, 2026-10-23,
+  recommends closing the Camera Kit thread for C088.)
 
 GO/NO-GO: if custom foundation VTO or a usable skin-colour output
 fails on the real account, the product core is reassessed the same
