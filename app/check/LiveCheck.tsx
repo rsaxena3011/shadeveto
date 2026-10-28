@@ -46,6 +46,54 @@ function faceDetectorCtor():
   return typeof ctor === "function" ? ctor : null;
 }
 
+// Portable fallback: the built-in FaceDetector exists only on a few
+// browsers (not desktop Chrome), so a missing one must not block a
+// live check. MediaPipe runs in normal Chrome, desktop and mobile,
+// from WASM + model files served by CDN, no install on the device.
+let mediaPipeDetector: {
+  detect: (source: ImageBitmap) => Promise<{
+    detections: Array<{ boundingBox?: { width?: number } }>;
+  }>;
+} | null = null;
+let mediaPipeLoading: Promise<typeof mediaPipeDetector> | null = null;
+
+async function mediaPipeDetect(bitmap: ImageBitmap): Promise<{
+  faceDetected: boolean;
+  faceWidthPx: number;
+}> {
+  if (!mediaPipeDetector) {
+    if (!mediaPipeLoading) {
+      mediaPipeLoading = (async () => {
+        const vision = await import("@mediapipe/tasks-vision");
+        const fileset = await vision.FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10/wasm",
+        );
+        const detector = await vision.FaceDetector.createFromOptions(
+          fileset,
+          {
+            baseOptions: {
+              modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+              delegate: "GPU",
+            },
+            runningMode: "IMAGE",
+            minDetectionConfidence: 0.5,
+          },
+        );
+        return detector as unknown as typeof mediaPipeDetector;
+      })();
+    }
+    mediaPipeDetector = await mediaPipeLoading;
+  }
+  if (!mediaPipeDetector) throw new Error("MediaPipe detector did not load.");
+  const result = await mediaPipeDetector.detect(bitmap);
+  const box = result.detections[0]?.boundingBox;
+  if (!box || typeof box.width !== "number") {
+    return { faceDetected: false, faceWidthPx: 0 };
+  }
+  return { faceDetected: true, faceWidthPx: Math.round(box.width) };
+}
+
 interface PreparedPhoto {
   blob: Blob;
   measurement: CaptureMeasurement;
@@ -81,6 +129,10 @@ async function preparePhoto(file: File): Promise<PreparedPhoto> {
         imageWidthPx: bitmap.width,
       };
     }
+  } else {
+    // Normal browsers have no built-in FaceDetector: use MediaPipe.
+    const detected = await mediaPipeDetect(bitmap);
+    measurement = { ...detected, imageWidthPx: bitmap.width };
   }
   const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
@@ -101,7 +153,6 @@ export default function LiveCheck() {
   const [ownedHex, setOwnedHex] = useState("");
   const [ownedName, setOwnedName] = useState("");
   const [prepared, setPrepared] = useState<PreparedPhoto | null>(null);
-  const [detectorMissing, setDetectorMissing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -121,17 +172,12 @@ export default function LiveCheck() {
       setMessage("Live checks accept JPG or PNG photos only.");
       return;
     }
-    if (!faceDetectorCtor()) {
-      setDetectorMissing(true);
-      setMessage(
-        "This browser cannot measure face size, so a live check cannot start here. The server gate needs that measurement before any paid call. Fixture mode above still works.",
-      );
-      return;
-    }
     try {
       setPrepared(await preparePhoto(file));
     } catch {
-      setMessage("That photo could not be read in this browser. Try another copy.");
+      setMessage(
+        "That photo could not be measured in this browser. Check your connection and try again with the same photo.",
+      );
     }
   }
 
@@ -277,7 +323,7 @@ export default function LiveCheck() {
         type="button"
         className="run-button"
         onClick={run}
-        disabled={busy || prepared === null || detectorMissing}
+        disabled={busy || prepared === null}
       >
         Run the live check (spends 20 units)
       </button>
