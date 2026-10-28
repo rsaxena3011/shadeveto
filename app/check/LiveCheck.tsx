@@ -57,31 +57,45 @@ let mediaPipeDetector: {
 } | null = null;
 let mediaPipeLoading: Promise<typeof mediaPipeDetector> | null = null;
 
+async function loadMediaPipeDetector(): Promise<typeof mediaPipeDetector> {
+  const vision = await import("@mediapipe/tasks-vision");
+  const fileset = await vision.FilesetResolver.forVisionTasks(
+    // Must match the installed tasks-vision major version (1.x, see
+    // package.json). A 0.10 wasm bundle against 1.x JS fails to load,
+    // which is why the first MediaPipe attempt died on desktop Chrome.
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/wasm",
+  );
+  const modelAssetPath =
+    "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+  try {
+    return (await vision.FaceDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath, delegate: "GPU" },
+      runningMode: "IMAGE",
+      minDetectionConfidence: 0.5,
+    })) as unknown as typeof mediaPipeDetector;
+  } catch {
+    // GPU delegate fails on some Windows Chrome setups: CPU works
+    // everywhere, just slower, and this is one photo, not video.
+    return (await vision.FaceDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath, delegate: "CPU" },
+      runningMode: "IMAGE",
+      minDetectionConfidence: 0.5,
+    })) as unknown as typeof mediaPipeDetector;
+  }
+}
+
 async function mediaPipeDetect(bitmap: ImageBitmap): Promise<{
   faceDetected: boolean;
   faceWidthPx: number;
 }> {
   if (!mediaPipeDetector) {
     if (!mediaPipeLoading) {
-      mediaPipeLoading = (async () => {
-        const vision = await import("@mediapipe/tasks-vision");
-        const fileset = await vision.FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10/wasm",
-        );
-        const detector = await vision.FaceDetector.createFromOptions(
-          fileset,
-          {
-            baseOptions: {
-              modelAssetPath:
-                "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-              delegate: "GPU",
-            },
-            runningMode: "IMAGE",
-            minDetectionConfidence: 0.5,
-          },
-        );
-        return detector as unknown as typeof mediaPipeDetector;
-      })();
+      mediaPipeLoading = loadMediaPipeDetector().catch((error) => {
+        // Do not cache a failed load: a retry after a network
+        // hiccup must actually retry instead of replaying the error.
+        mediaPipeLoading = null;
+        throw error;
+      });
     }
     mediaPipeDetector = await mediaPipeLoading;
   }
