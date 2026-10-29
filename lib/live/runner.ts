@@ -60,7 +60,7 @@ import {
   YouCamTaskTimeoutError,
   type YouCamClient,
 } from "../youcam/client.ts";
-import { youcamBearerFromConnector } from "../youcam/credential.ts";
+import { youcamBearerForLiveRun } from "../youcam/credential.ts";
 import { UnitInfoBalanceProvider } from "./balance.ts";
 import type { LiveSpendCaps } from "./limits.ts";
 import { liveSpendCaps } from "./limits.ts";
@@ -397,14 +397,15 @@ async function pollAndFinish(
 
 /**
  * Build the production dependencies: the client carries the
- * connector surrogate (never the real key; see
- * lib/youcam/credential.ts), the balance provider reads the
+ * bearer from lib/youcam/credential.ts (the server-only env key on
+ * hosted deployments, the connector surrogate on the VM; it is
+ * never logged or sent to a browser), the balance provider reads the
  * provider's own unit endpoint, and the store is the process-wide
  * singleton. Called per request so env changes apply without a
  * restart; the store is the only shared state.
  */
 export async function createConnectorLiveDeps(): Promise<LiveDeps> {
-  const bearer = await youcamBearerFromConnector();
+  const bearer = await youcamBearerForLiveRun();
   const baseUrl = (
     process.env.YOUCAM_API_BASE_URL ?? "https://yce-api-01.makeupar.com"
   ).replace(/\/+$/, "");

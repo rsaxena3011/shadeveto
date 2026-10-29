@@ -112,6 +112,28 @@ function postJsonOverSocket(
   });
 }
 
+/**
+ * The bearer for a live run, from whichever source the server
+ * actually has:
+ * - Hosted deployments (Vercel) have no Hatch credential socket to
+ *   ask, so the key there is the server-only YOUCAM_API_KEY env var
+ *   set in the project settings. It is read per request, used only
+ *   as the Authorization bearer on server-side calls to the API
+ *   host, and never logged, returned, or written anywhere.
+ * - On the Hatch VM there is no env var, so the connector
+ *   surrogate below is used instead.
+ * Until 2026-10-29 the live deps asked ONLY for the surrogate,
+ * which does not exist on Vercel, so every hosted live request
+ * threw before the passcode was even checked and the route failed
+ * closed to fixture mode. That is why the judge run "did not
+ * start" even with the correct passcode and a measured photo.
+ */
+export async function youcamBearerForLiveRun(): Promise<string> {
+  const envKey = process.env.YOUCAM_API_KEY?.trim();
+  if (envKey) return envKey;
+  return youcamBearerFromConnector();
+}
+
 /** Fetch the YouCam surrogate entry from the credential service. */
 export async function fetchYouCamSurrogate(
   socketPath: string = process.env.JARVIS_AUTHD_SOCK ?? DEFAULT_AUTHD_SOCKET,
