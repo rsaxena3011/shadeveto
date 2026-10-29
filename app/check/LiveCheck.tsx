@@ -208,7 +208,11 @@ export default function LiveCheck() {
     }
     try {
       setPrepared(await preparePhoto(file));
-    } catch {
+    } catch (error) {
+      // Keep the real error reachable in the console: swallowing it
+      // here is what made the Oct 28-29 measurement failures
+      // undiagnosable for four attempts.
+      console.error("LiveCheck photo measurement failed:", error);
       setMessage(
         "That photo could not be measured in this browser. Check your connection and try again with the same photo.",
       );
