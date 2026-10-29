@@ -49,7 +49,8 @@ function faceDetectorCtor():
 // Portable fallback: the built-in FaceDetector exists only on a few
 // browsers (not desktop Chrome), so a missing one must not block a
 // live check. MediaPipe runs in normal Chrome, desktop and mobile,
-// from WASM + model files served by CDN, no install on the device.
+// from WASM + model files served by this site itself (public/
+// mediapipe), no install on the device and no third-party CDN.
 let mediaPipeDetector: {
   detect: (source: ImageBitmap) => Promise<{
     detections: Array<{ boundingBox?: { width?: number } }>;
@@ -68,13 +69,16 @@ async function loadMediaPipeDetector(): Promise<{
 }> {
   const vision = await import("@mediapipe/tasks-vision");
   const fileset = await vision.FilesetResolver.forVisionTasks(
-    // Must match the installed tasks-vision major version (1.x, see
-    // package.json). A 0.10 wasm bundle against 1.x JS fails to load,
-    // which is why the first MediaPipe attempt died on desktop Chrome.
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/wasm",
+    // Self-hosted wasm bundle (copied from the installed tasks-vision
+    // 1.2.0 package into public/mediapipe/wasm). Loading from the
+    // jsDelivr CDN failed on slow/mobile connections, which killed the
+    // measurement before any paid call; same-origin files cannot be
+    // blocked by a third-party CDN hiccup.
+    "/mediapipe/wasm",
   );
-  const modelAssetPath =
-    "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+  // Self-hosted model file for the same reason: no Google Storage
+  // fetch at run time.
+  const modelAssetPath = "/mediapipe/blaze_face_short_range.tflite";
   try {
     return (await vision.FaceDetector.createFromOptions(fileset, {
       baseOptions: { modelAssetPath, delegate: "GPU" },
