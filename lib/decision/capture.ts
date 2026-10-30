@@ -68,7 +68,7 @@ export function checkCapture(input: CaptureMeasurement): CaptureGateResult {
   if (ratio <= SKIN_ANALYSIS_MIN_FACE_RATIO) {
     const pct = Math.round(ratio * 100);
     reasons.push(
-      `Your face fills ${pct}% of the photo width. Skin analysis needs it to fill more than 60%, so move closer or crop tighter and try again.`,
+      `Your face fills ${pct}% of the photo width. This check needs it to fill more than 60%, so move closer or crop tighter and try again.`,
     );
   }
 

@@ -294,6 +294,12 @@ main {
   margin-bottom: 0;
 }
 
+.balance-line {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-top: 0.25rem;
+}
+
 .provider-error {
   margin-top: 1.5rem;
   border: 2px dashed var(--muted);

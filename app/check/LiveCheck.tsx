@@ -150,6 +150,10 @@ type LiveReply =
       message: string;
     };
 
+type BalanceReply =
+  | { mode: "fixture" }
+  | { mode: "live"; balance: number | null };
+
 async function preparePhoto(file: File): Promise<PreparedPhoto> {
   const bitmap = await createImageBitmap(file);
   let measurement: CaptureMeasurement = {
@@ -220,6 +224,15 @@ export default function LiveCheck() {
   // units per session) is looser than that promise, so the panel
   // itself retires the button after one paid reading and says so.
   const [liveUsed, setLiveUsed] = useState(false);
+  // Pre-run balance: read once per passcode when the panel first
+  // reaches its "live mode is ready" state, so the cost context
+  // is on screen before anything is spent. Keyed to the passcode
+  // it was read for; a read is never shown for a different one.
+  const [balanceRead, setBalanceRead] = useState<{
+    forPasscode: string;
+    balance: number | null;
+  } | null>(null);
+  const balanceFetchedFor = useRef<string | null>(null);
   const receiptRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -251,6 +264,44 @@ export default function LiveCheck() {
       });
     }
   }, [receipt]);
+
+  // Fetch the balance on the transition into the ready state:
+  // passcode present, no reading used yet, no receipt on screen.
+  // Debounced, so typing the passcode does not fire a read per
+  // keystroke, and each distinct passcode is read at most once.
+  // The server answers a wrong passcode with the same opaque
+  // fixture marker as a run attempt, and the panel then shows
+  // nothing extra; the read never runs a check and spends
+  // nothing.
+  useEffect(() => {
+    const trimmed = passcode.trim();
+    if (trimmed === "" || liveUsed || receipt !== null) return;
+    if (balanceFetchedFor.current === trimmed) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      balanceFetchedFor.current = trimmed;
+      const form = new FormData();
+      form.set("passcode", trimmed);
+      void (async () => {
+        try {
+          const res = await fetch("/api/balance", {
+            method: "POST",
+            body: form,
+          });
+          const reply = (await res.json()) as BalanceReply;
+          if (cancelled || reply.mode !== "live") return;
+          setBalanceRead({ forPasscode: trimmed, balance: reply.balance });
+        } catch {
+          // A failed fetch shows nothing invented; the receipt
+          // still reports the real before/after after a run.
+        }
+      })();
+    }, 700);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [passcode, liveUsed, receipt]);
 
   const gate =
     prepared !== null ? checkCapture(prepared.measurement) : null;
@@ -428,6 +479,16 @@ export default function LiveCheck() {
               ? "Passcode entered, but this session has already used its one live reading."
               : "Passcode entered: live mode is ready. It runs when you press the button below."}
         </p>
+        {balanceRead !== null &&
+        balanceRead.forPasscode === passcode.trim() &&
+        !liveUsed &&
+        receipt === null ? (
+          <p className="balance-line" aria-live="polite">
+            {balanceRead.balance !== null
+              ? `Balance before this check: ${balanceRead.balance} units.`
+              : "The balance could not be read. Nothing was spent."}
+          </p>
+        ) : null}
         {measuring ? (
           <p className="face-share" aria-live="polite">
             Detecting face...

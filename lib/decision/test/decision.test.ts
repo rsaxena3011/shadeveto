@@ -100,6 +100,12 @@ function main() {
     !small.ok && small.reasons[0].includes("45%") && small.reasons[0].includes("60%"),
     "gate rejection names the measured share and the required share",
   );
+  check(
+    !small.ok &&
+      small.reasons[0].includes("This check needs") &&
+      !small.reasons[0].includes("Skin analysis needs"),
+    "gate rejection attributes the 60% rule to this check (ShadeVeto's own study gate), not to the provider",
+  );
   const noFace = checkCapture({ faceDetected: false, faceWidthPx: 0, imageWidthPx: 1000 });
   check(!noFace.ok && noFace.reasons[0].includes("No face"), "gate rejects when no face is found");
 

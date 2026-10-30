@@ -19,7 +19,7 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
-    "test": "node lib/youcam/test/client.test.ts && node lib/ledger/test/ledger.test.ts && node lib/catalog/test/catalog.test.ts && node lib/catalog/test/licensed-catalog.test.ts && node lib/fixtures/test/mirror.test.ts && node lib/decision/test/color.test.ts && node lib/decision/test/decision.test.ts && node lib/ui/test/receipt-view.test.ts && node lib/ui/test/brand-view.test.ts && node lib/live/test/live.test.ts"
+    "test": "node lib/youcam/test/client.test.ts && node lib/ledger/test/ledger.test.ts && node lib/catalog/test/catalog.test.ts && node lib/catalog/test/licensed-catalog.test.ts && node lib/fixtures/test/mirror.test.ts && node lib/decision/test/color.test.ts && node lib/decision/test/decision.test.ts && node lib/ui/test/receipt-view.test.ts && node lib/ui/test/brand-view.test.ts && node lib/live/test/live.test.ts && node lib/live/test/balance.test.ts"
   },
   "type": "module",
   "version": "0.1.0"
