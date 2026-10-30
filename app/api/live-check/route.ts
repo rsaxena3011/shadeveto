@@ -115,6 +115,8 @@ export async function POST(req: Request) {
       return respond({ mode: "live", outcome: "refused", message: outcome.message });
     case "pending":
       return respond({ mode: "live", outcome: "pending", message: outcome.message });
+    case "provider-error":
+      return respond({ mode: "live", outcome: "provider-error", message: outcome.message });
     case "lost":
       return respond({ mode: "live", outcome: "lost", message: outcome.message });
   }

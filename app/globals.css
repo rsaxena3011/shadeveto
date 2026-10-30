@@ -269,6 +269,28 @@ main {
   color: var(--muted);
 }
 
+.passcode-status {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-bottom: 0;
+}
+
+.provider-error {
+  margin-top: 1.5rem;
+  border: 2px dashed var(--muted);
+  border-radius: 0.5rem;
+  background: #f5f0e8;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.provider-error h3 {
+  margin: 0 0 0.5rem;
+}
+
+.provider-error .run-button {
+  margin-top: 0.75rem;
+}
+
 .live-receipt {
   scroll-margin-top: 1rem;
 }

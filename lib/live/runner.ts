@@ -91,6 +91,7 @@ export type LiveRunOutcome =
   | { kind: "cap"; message: string }
   | { kind: "refused"; message: string }
   | { kind: "pending"; message: string }
+  | { kind: "provider-error"; message: string }
   | { kind: "lost"; message: string };
 
 export interface LiveDeps {
@@ -310,26 +311,24 @@ async function pollAndFinish(
       return { kind: "pending", message: PENDING_MESSAGE };
     }
     if (err instanceof YouCamTaskError) {
-      // The task itself failed. Failed tasks are charged and then
-      // refunded in full (proven in the study ledger), so this run
-      // spent 0 and the honest receipt is CAN'T TELL.
+      // The task itself ended in an error at the provider. That
+      // is a service failure, not a reading the engine cannot
+      // judge, so it gets its own outcome and never reaches
+      // runDecision: CAN'T TELL is reserved for an actual reading
+      // that cannot be judged (for example a completed call whose
+      // result carried no readable skin_color). Failed tasks are
+      // charged and then refunded in full (proven in the study
+      // ledger), so this run spent 0; the reservation is released
+      // and the panel may offer ONE deliberate retry. A timeout is
+      // deliberately NOT this outcome: a timed-out task may still
+      // finish and charge, so it stays on the pending path above
+      // and is collected, never restarted.
       store.ledger.release(inFlight.ledgerEntryId);
       session.inFlight = null;
       return {
-        kind: "receipt",
-        receipt: runDecision({
-          capture: inFlight.capture,
-          skinTone: null,
-          catalog: deps.catalog,
-          ownedShades: inFlight.ownedShades,
-          readingSource: {
-            kind: "live",
-            unitsSpent: 0,
-            note: "Live mode: the Skin Tone task ended in an error at the provider, so there is no reading to judge. Failed tasks are charged and then refunded in full (proven in the study ledger), so this check spent 0 units.",
-          },
-        }),
-        balanceBefore: inFlight.balanceBefore,
-        balanceAfter: null,
+        kind: "provider-error",
+        message:
+          "The reading service returned an error before any reading was taken. Failed tasks are refunded in full, so no units were spent. You can try again.",
       };
     }
     if (

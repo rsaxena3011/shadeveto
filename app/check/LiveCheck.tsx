@@ -145,7 +145,7 @@ type LiveReply =
     }
   | {
       mode: "live";
-      outcome: "cap" | "refused" | "pending" | "lost";
+      outcome: "cap" | "refused" | "pending" | "lost" | "provider-error";
       message: string;
     };
 
@@ -206,6 +206,12 @@ export default function LiveCheck() {
     null,
   );
   const [detectError, setDetectError] = useState<string | null>(null);
+  // A provider task error is a service failure, not a CAN'T TELL
+  // verdict: it gets its own panel and exactly one retry with the
+  // photo and passcode already entered, so a provider hiccup can
+  // never turn into a spend loop.
+  const [providerError, setProviderError] = useState<string | null>(null);
+  const [retryUsed, setRetryUsed] = useState(false);
   // The panel copy promises ONE real reading; the server cap (60
   // units per session) is looser than that promise, so the panel
   // itself retires the button after one paid reading and says so.
@@ -220,6 +226,16 @@ export default function LiveCheck() {
     } catch {
       // Storage can be unavailable (private modes); the in-page
       // state still covers the common case.
+    }
+    // Judge deep link: /check?passcode=... pre-fills the passcode
+    // so the testing instructions can send judges straight into
+    // live mode. The value is only ever sent to this site's own
+    // live-check endpoint, exactly like a typed passcode.
+    const fromLink = new URLSearchParams(window.location.search).get(
+      "passcode",
+    );
+    if (fromLink !== null && fromLink.trim() !== "") {
+      setPasscode(fromLink.trim());
     }
   }, []);
 
@@ -242,6 +258,8 @@ export default function LiveCheck() {
     setPending(false);
     setPrepared(null);
     setDetectError(null);
+    setProviderError(null);
+    setRetryUsed(false);
     setMeasuring(false);
     if (photoPreviewUrl !== null) {
       URL.revokeObjectURL(photoPreviewUrl);
@@ -276,6 +294,7 @@ export default function LiveCheck() {
   async function post(form: FormData) {
     setBusy(true);
     setMessage(null);
+    setProviderError(null);
     try {
       const res = await fetch("/api/live-check", {
         method: "POST",
@@ -309,6 +328,12 @@ export default function LiveCheck() {
         }
         return;
       }
+      if (reply.outcome === "provider-error") {
+        setPending(false);
+        setReceipt(null);
+        setProviderError(reply.message);
+        return;
+      }
       setPending(reply.outcome === "pending");
       setReceipt(null);
       setMessage(reply.message);
@@ -325,7 +350,10 @@ export default function LiveCheck() {
   function run() {
     if (!prepared || liveUsed) return;
     const form = new FormData();
-    form.set("passcode", passcode);
+    // Trimmed before sending: a pasted passcode with stray
+    // whitespace or a trailing newline is the common near-miss,
+    // and it should never silently land in fixture mode.
+    form.set("passcode", passcode.trim());
     form.set("faceDetected", String(prepared.measurement.faceDetected));
     form.set("faceWidthPx", String(prepared.measurement.faceWidthPx));
     form.set("imageWidthPx", String(prepared.measurement.imageWidthPx));
@@ -337,8 +365,14 @@ export default function LiveCheck() {
 
   function resume() {
     const form = new FormData();
-    form.set("passcode", passcode);
+    form.set("passcode", passcode.trim());
     void post(form);
+  }
+
+  function retry() {
+    if (providerError === null || retryUsed || prepared === null) return;
+    setRetryUsed(true);
+    run();
   }
 
   const view = receipt !== null ? buildReceiptView(receipt) : null;
@@ -375,6 +409,13 @@ export default function LiveCheck() {
             />
           </label>
         </div>
+        <p className="passcode-status" aria-live="polite">
+          {passcode.trim() === ""
+            ? "Live mode is locked until the judge passcode is entered. It unlocks as you type, there is no separate unlock step."
+            : liveUsed
+              ? "Passcode entered, but this session has already used its one live reading."
+              : "Passcode entered: live mode is ready. It runs when you press the button below."}
+        </p>
         {measuring ? (
           <p className="face-share" aria-live="polite">
             Detecting face...
@@ -467,6 +508,34 @@ export default function LiveCheck() {
         <p className="form-error" role="alert">
           {message}
         </p>
+      ) : null}
+      {providerError !== null ? (
+        <div className="provider-error" role="alert">
+          <h3>The reading service hit an error</h3>
+          <p>{providerError}</p>
+          <button
+            type="button"
+            className="run-button"
+            onClick={retry}
+            disabled={busy || retryUsed || prepared === null}
+          >
+            {busy ? (
+              <>
+                Running...
+                <span className="spinner" aria-hidden="true" />
+              </>
+            ) : (
+              "Try again with the same photo"
+            )}
+          </button>
+          {retryUsed ? (
+            <p>
+              One retry already used for this photo. If the service
+              keeps failing, fixture mode above still works, and a
+              later session can try live again.
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       {view !== null ? (

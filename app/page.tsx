@@ -13,8 +13,8 @@ export default function HomePage() {
           One foundation, checked against your skin and your shelf,
           so the answer can be BUY, SHADE-RISK, or NO, with the
           reason shown. A try-on render is available as a labelled
-          preview only: it is not run in the shipped check flow and
-          never feeds a verdict. Built on the YouCam API.
+          preview only, and never feeds a verdict. Built on the
+          YouCam API.
         </p>
         <p>
           <Link href="/check" className="hero-cta">
@@ -28,49 +28,55 @@ export default function HomePage() {
         <ol>
           <li>
             <strong>Capture.</strong> In fixture mode, pick a study
-            face and a framing scenario; in live mode, upload a photo
-            file and let the in-browser face detector measure it:
-            MediaPipe running on this site&apos;s own files, or the
-            browser&apos;s built-in detector where one exists, with
-            a plain refusal where measurement fails. There is no
-            colour-cast warning in the shipped flow.
+            face and a framing scenario. In live mode, upload a photo
+            and the in-browser face detector measures it: MediaPipe
+            running on this site&apos;s own files, or the
+            browser&apos;s built-in detector where one exists. A
+            photo that cannot be measured gets a plain refusal,
+            never a guessed number.
           </li>
           <li>
             <strong>Colour.</strong> One skin-tone reading, ranked
-            against a small, dated, licensed shade catalog by colour
-            distance.
+            against a licensed catalog of 617 foundation shades by
+            colour distance.
           </li>
           <li>
-            <strong>Preview.</strong> Makeup VTO rendering is available
-            as a client function, but it is not run in the shipped
-            check flow: every receipt logs makeup-vto-preview as
-            skipped, and the preview never feeds a verdict. Colour
-            distance and the cluster rule decide.
+            <strong>Preview.</strong> A makeup try-on render is
+            available as a labelled preview only. It never feeds a
+            verdict: colour distance and the cluster rule decide.
           </li>
           <li>
-            <strong>Receipt.</strong> BUY, SHADE-RISK, or NO, with
-            every number in the reason traced to a measurement, and a
-            DON&apos;T BUY when you already own the match.
+            <strong>Receipt.</strong> BUY, SHADE-RISK, NO, or
+            CAN&apos;T TELL, with every number in the reason traced
+            to a measurement, and a DON&apos;T BUY when a bottle you
+            already own matches.
           </li>
         </ol>
       </section>
 
       <section className="status">
-        <h2>Status</h2>
+        <h2>The receipt</h2>
         <p>
-          Build in progress: the decision engine and its fixture-mode
-          check page are in, and live mode now runs behind the judge
-          passcode on the same page: one real Skin Tone call through
-          the same engine, under server-side spend caps, with a
-          receipt labelled LIVE. Public visitors get the fixture
-          replay only. A brand coverage screen now counts the same
-          engine&apos;s verdicts across all six study tones, so a
-          catalog&apos;s gaps show as plain counts, one bucket per
-          verdict, never merged. The live check and the brand screen
-          now rank a real licensed catalog: 617 foundation shades
-          from The Pudding foundation shades dataset, swatches
-          recorded in 2018, used under the MIT License. The public
-          replay keeps its labelled fixture shades.
+          The receipt is the product. For one foundation it shows
+          the verdict, the measured tone, the closest shades with
+          their colour distances, and every threshold the engine
+          applied. The cluster rule keeps it honest: in a dense
+          catalog the top shades sit closer together than the
+          measurement noise, so ShadeVeto names the whole cluster
+          instead of crowning a single winner. BUY fires only when
+          every shade in that cluster matches inside the range; if
+          one member falls outside, the receipt says SHADE-RISK and
+          names the cluster. Every step the engine did not run is
+          logged as skipped, in the open, and live spend is capped
+          per session and in total.
+        </p>
+        <p>
+          The catalog is 617 foundation shades from The Pudding
+          foundation shades dataset, swatches recorded in 2018,
+          used under the MIT License. A brand coverage screen counts
+          the same engine&apos;s verdicts across all six study
+          tones, so a catalog&apos;s gaps show as plain counts, one
+          bucket per verdict, never merged.
         </p>
       </section>
     </div>

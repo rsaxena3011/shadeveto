@@ -22,16 +22,16 @@ export default function RootLayout({
           </Link>
           <nav className="site-nav">
             <Link href="/#how">How it works</Link>
-            <Link href="/check">Fixture check</Link>
+            <Link href="/check">Check a shade</Link>
             <Link href="/brands">Brand coverage</Link>
-            <Link href="/api/health">Health</Link>
           </nav>
         </header>
         <main>{children}</main>
         <footer className="site-footer">
           <p>
             ShadeVeto. A purchase check, not a shade finder: it tells you
-            when it can&apos;t tell.
+            when it can&apos;t tell.{" "}
+            <Link href="/api/health">Health</Link>
           </p>
         </footer>
       </body>

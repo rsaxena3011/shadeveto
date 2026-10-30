@@ -384,7 +384,9 @@ async function main() {
     check(store.globalCommitted() === 20, "resumed run settles once, at the delta");
   }
 
-  // 8. Task-level failure: CAN'T TELL receipt, 0 spent, released.
+  // 8. Task-level failure: a provider error is a service failure,
+  // not a verdict, so it gets its own outcome, never a receipt.
+  // 0 committed, reservation released.
   {
     const { client } = scriptedApi(() =>
       jsonResponse({
@@ -394,16 +396,13 @@ async function main() {
     const { deps, store } = makeDeps(client, new QueueBalance([900]));
     const outcome = await runLiveCheck(deps, req());
     check(
-      outcome.kind === "receipt" &&
-        outcome.receipt.verdict === "CAN'T TELL" &&
-        outcome.receipt.reasonTag === "reading-unusable",
-      "failed task ends in CAN'T TELL, not a guessed verdict",
+      outcome.kind === "provider-error",
+      "failed task ends in the provider-error state, not a CAN'T TELL verdict",
     );
     check(
-      outcome.kind === "receipt" &&
-        outcome.receipt.unitsSpent === 0 &&
-        outcome.receipt.fixtureMode === false,
-      "failed task spent 0 and is still labelled live",
+      outcome.kind === "provider-error" &&
+        outcome.message.includes("no units were spent"),
+      "failed task error says plainly that no units were spent",
     );
     check(store.globalCommitted() === 0, "failed task's reservation is released");
   }
