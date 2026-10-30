@@ -17,7 +17,7 @@ const securityHeaders = [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data:",
+      "img-src 'self' data: blob: https://plugins-media.makeupar.com",
       "font-src 'self' data:",
       "connect-src 'self'",
       "frame-ancestors 'none'",
