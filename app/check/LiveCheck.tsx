@@ -6,6 +6,17 @@
  * (lib/live/runner.ts); this component prepares the photo and
  * carries the server's answer.
  *
+ * The run is identified end to end and every wait is bounded.
+ * This panel mints a run id before the first request and sends
+ * it with the start and with every collect; the server records
+ * the run under that id, so a collect resumes or replays the
+ * SAME run. And the wait for each answer has a limit
+ * (lib/live/wait.ts): a response lost between the platform and
+ * this browser used to leave the panel on "Running..." forever,
+ * because a fetch that never settles never reaches a catch
+ * block. At the bound the panel hands over to the collect
+ * action instead, with the run's id already attached.
+ *
  * Photo preparation happens here, before upload, per the plan:
  * JPG and PNG only, shrunk in the browser to at most 1024 px on
  * the long side and re-encoded as JPEG, then uploaded once. The
@@ -25,6 +36,10 @@ import {
   type CaptureMeasurement,
 } from "../../lib/decision/capture.ts";
 import { faceShareText } from "../../lib/ui/fixture-session.ts";
+import {
+  awaitBounded,
+  LIVE_RUN_WAIT_MS,
+} from "../../lib/live/wait.ts";
 import type { Receipt } from "../../lib/decision/decision.ts";
 import { buildReceiptView } from "../../lib/ui/receipt-view.ts";
 import ReceiptSection, { type ReceiptPreview } from "./ReceiptSection";
@@ -192,6 +207,16 @@ async function preparePhoto(file: File): Promise<PreparedPhoto> {
 
 const LIVE_USED_STORAGE_KEY = "shadeveto-live-used";
 
+/** A fresh identity for one run (see the header). The id names
+ * the run for the server's records; it is not a credential, and
+ * the passcode still gates every replay. */
+function newRunId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `run-${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
+}
+
 export default function LiveCheck() {
   const [passcode, setPasscode] = useState("");
   const [ownedHex, setOwnedHex] = useState("");
@@ -234,6 +259,12 @@ export default function LiveCheck() {
   } | null>(null);
   const balanceFetchedFor = useRef<string | null>(null);
   const receiptRef = useRef<HTMLDivElement>(null);
+  // The current run's id: minted at the first Run press, sent
+  // with the start and every collect, and retired only when the
+  // run reaches a terminal answer. While it is set, pressing Run
+  // again names the same run (the server resumes it); it can
+  // never name a second one by accident.
+  const runIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     try {
@@ -351,13 +382,39 @@ export default function LiveCheck() {
     setBusy(true);
     setMessage(null);
     setProviderError(null);
-    try {
+    // Bounded wait (see the header): when the bound passes with
+    // no answer, or the request fails outright, the panel moves
+    // to the collect state instead of spinning. The run id in
+    // the form is what makes collecting safe: the server resumes
+    // or replays that run, never a new one.
+    const result = await awaitBounded(async (signal) => {
       const res = await fetch("/api/live-check", {
         method: "POST",
         body: form,
+        signal,
       });
-      const reply = (await res.json()) as LiveReply;
+      return (await res.json()) as LiveReply;
+    }, LIVE_RUN_WAIT_MS);
+    try {
+      if (result.kind === "timeout") {
+        setPending(true);
+        setReceipt(null);
+        setPreview(null);
+        setMessage(
+          "The check is taking longer than this panel waits for. The reading may still complete on the server, and waiting charged nothing new. Use the button below to collect it: collecting resumes the same reading, it never starts a second one.",
+        );
+        return;
+      }
+      if (result.kind === "unreachable") {
+        setMessage(
+          "The live check could not be reached. If a reading was started, it is held safely on the server; trying again will collect it, never restart it.",
+        );
+        setPending(true);
+        return;
+      }
+      const reply = result.value;
       if (reply.mode === "fixture") {
+        runIdRef.current = null;
         // The server answers a missing OR a wrong passcode with the
         // same fixture marker, on purpose. The panel still knows
         // what was typed, so it can say which case this is instead
@@ -373,6 +430,7 @@ export default function LiveCheck() {
         return;
       }
       if (reply.outcome === "receipt") {
+        runIdRef.current = null;
         setPending(false);
         setReceipt(reply.receipt);
         setPreview(reply.preview);
@@ -387,21 +445,25 @@ export default function LiveCheck() {
         return;
       }
       if (reply.outcome === "provider-error") {
+        // The failed task was refunded and the run is over; its
+        // id is retired, so the one deliberate retry below mints
+        // a fresh id for what is genuinely a new run.
+        runIdRef.current = null;
         setPending(false);
         setReceipt(null);
         setPreview(null);
         setProviderError(reply.message);
         return;
       }
+      // The remaining answers are cap, refused, lost and
+      // pending. All but pending end the run, so the id is
+      // retired the same way; pending keeps it, because the
+      // collect below is still this run.
+      if (reply.outcome !== "pending") runIdRef.current = null;
       setPending(reply.outcome === "pending");
       setReceipt(null);
       setPreview(null);
       setMessage(reply.message);
-    } catch {
-      setMessage(
-        "The live check could not be reached. If a reading was started, it is held safely on the server; trying again will collect it, never restart it.",
-      );
-      setPending(true);
     } finally {
       setBusy(false);
     }
@@ -409,11 +471,17 @@ export default function LiveCheck() {
 
   function run() {
     if (!prepared || liveUsed) return;
+    // One id per run, minted before the first request: while a
+    // run is open (started, not yet answered with a terminal
+    // outcome) its id is reused, so this button can never name
+    // a second run by accident.
+    if (runIdRef.current === null) runIdRef.current = newRunId();
     const form = new FormData();
     // Trimmed before sending: a pasted passcode with stray
     // whitespace or a trailing newline is the common near-miss,
     // and it should never silently land in fixture mode.
     form.set("passcode", passcode.trim());
+    form.set("runId", runIdRef.current);
     form.set("faceDetected", String(prepared.measurement.faceDetected));
     form.set("faceWidthPx", String(prepared.measurement.faceWidthPx));
     form.set("imageWidthPx", String(prepared.measurement.imageWidthPx));
@@ -426,6 +494,10 @@ export default function LiveCheck() {
   function resume() {
     const form = new FormData();
     form.set("passcode", passcode.trim());
+    // The collect names the run it is collecting. Without the
+    // id it would depend on the session cookie, which is
+    // exactly what a lost response takes with it.
+    if (runIdRef.current !== null) form.set("runId", runIdRef.current);
     void post(form);
   }
 

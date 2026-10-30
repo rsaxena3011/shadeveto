@@ -27,12 +27,28 @@
  * docs warn that a task which finishes but is never checked still
  * consumes its units, so assuming the charge is the honest side
  * to err on; releasing it would understate spend.
+ *
+ * Run records (the map below) are the second half of the same
+ * discipline, added after the filmed hang of 2026-10-30: a run
+ * whose response never reached the browser was unrecoverable
+ * because the session identity lived only in a cookie set on
+ * that lost response. So a run now also carries a client-chosen
+ * run id, generated before the first request and sent with every
+ * request for that run. The record binds the id to the session
+ * that owns the run and, once the run finishes, to its terminal
+ * outcome, so any repeated request carrying the same id (a lost
+ * response being collected, a retry layer re-sending the same
+ * POST) resumes or replays the SAME run and can never create a
+ * second task. Records expire on the same TTL as in-flight runs;
+ * a repeat after that is a new run, exactly like the pre-run-id
+ * behaviour.
  */
 
 import { TASK_COSTS } from "../config.ts";
 import type { ShadeEntry } from "../catalog/types.ts";
 import type { CaptureMeasurement } from "../decision/capture.ts";
 import { UnitLedger, type LedgerEntry } from "../ledger/ledger.ts";
+import type { LiveRunOutcome } from "./runner.ts";
 
 /** Two hours: long past any honest poll window, well inside the
  * provider's 24-hour file retention. */
@@ -86,9 +102,56 @@ export interface LiveSession {
   startingEntryId: string | null;
 }
 
+/**
+ * One client-identified run: the session that owns it and, once
+ * the run has finished in a way that must replay identically,
+ * its terminal outcome. A null outcome means the run is still
+ * active (starting, in flight, or holding an unknown charge) and
+ * is recovered through the owning session's state, never through
+ * a second creation.
+ */
+export interface LiveRunRecord {
+  sessionId: string;
+  outcome: LiveRunOutcome | null;
+  createdAt: number;
+}
+
 export class LiveStore {
   readonly ledger = new UnitLedger();
   private readonly sessions = new Map<string, LiveSession>();
+  private readonly runs = new Map<string, LiveRunRecord>();
+
+  /** The record for a client-supplied run id, if one was begun. */
+  runRecord(runId: string): LiveRunRecord | undefined {
+    return this.runs.get(runId);
+  }
+
+  /**
+   * Begin (or rebind) the record for a run id. Called at the
+   * moment a run reserves its spend: before that point nothing
+   * exists worth replaying, and the free deterministic outcomes
+   * (the capture-gate receipt) recompute identically.
+   */
+  beginRun(runId: string, sessionId: string): LiveRunRecord {
+    const existing = this.runs.get(runId);
+    if (existing) {
+      existing.sessionId = sessionId;
+      return existing;
+    }
+    const record: LiveRunRecord = {
+      sessionId,
+      outcome: null,
+      createdAt: Date.now(),
+    };
+    this.runs.set(runId, record);
+    return record;
+  }
+
+  /** Mark a run finished with the outcome repeats must replay. */
+  finishRun(runId: string, outcome: LiveRunOutcome): void {
+    const record = this.runs.get(runId);
+    if (record) record.outcome = outcome;
+  }
 
   session(id: string): LiveSession {
     let found = this.sessions.get(id);
@@ -164,6 +227,19 @@ export class LiveStore {
         }
         session.unknownChargeEntryId = null;
         session.unknownChargeAt = null;
+      }
+    }
+    // Finished run records expire on the same horizon: the
+    // replay guarantee covers the window in which a lost
+    // response can plausibly be retried or collected, and no
+    // longer. Active records are never swept here; their owning
+    // session's state above is what settles them.
+    for (const [runId, record] of this.runs) {
+      if (
+        record.outcome !== null &&
+        now - record.createdAt > IN_FLIGHT_TTL_MS
+      ) {
+        this.runs.delete(runId);
       }
     }
     return settled;

@@ -13,7 +13,21 @@ import type { ShadeEntry } from "../../../lib/catalog/types.ts";
 // ledger state. It must never run on the edge runtime.
 export const runtime = "nodejs";
 
+// One request does the whole run server-side: upload, create,
+// then polling the reading for up to 120s and a BUY preview for
+// up to 120s more (lib/config.ts), plus balance reads. That is
+// longer than the platform's default function duration, and a
+// function killed at the default while polling leaves a charged
+// task behind a response that never arrives (the filmed hang of
+// 2026-10-30). The duration is declared to cover the run's own
+// budgets; the pending/collect path covers anything slower.
+export const maxDuration = 300;
+
 const SESSION_COOKIE = "shadeveto-live-session";
+
+/** Shape of a client-chosen run id: a UUID, or the panel's
+ * fallback form. Anything else is ignored, never trusted. */
+const RUN_ID_PATTERN = /^[A-Za-z0-9-]{8,80}$/;
 
 /**
  * Live check endpoint. Public visitors get fixture mode and
@@ -22,9 +36,15 @@ const SESSION_COOKIE = "shadeveto-live-session";
  * gate. With it, one live Skin Tone run goes through
  * lib/live/runner.ts, which owns the spend discipline.
  *
- * The session cookie is what ties a timed-out run to its resume:
- * the task id lives server-side against this session, so leaving
- * and returning never creates a second, double-charged task.
+ * Two identities tie a run to its resume. The session cookie
+ * covers the ordinary timed-out run: the task id lives
+ * server-side against this session, so leaving and returning
+ * never creates a second, double-charged task. The run id the
+ * client generates before its first request covers the harder
+ * case the cookie cannot: a response lost in transit takes the
+ * cookie with it, so the run is ALSO recorded under the run id,
+ * and a collect carrying that id resumes or replays the same
+ * run from any session (see lib/live/runner.ts).
  */
 export async function POST(req: Request) {
   const jar = await cookies();
@@ -53,6 +73,11 @@ export async function POST(req: Request) {
   }
 
   const passcode = form.get("passcode");
+  const runIdRaw = form.get("runId");
+  const runId =
+    typeof runIdRaw === "string" && RUN_ID_PATTERN.test(runIdRaw)
+      ? runIdRaw
+      : null;
   const faceDetected = form.get("faceDetected") === "true";
   const faceWidthPx = Number(form.get("faceWidthPx") ?? 0);
   const imageWidthPx = Number(form.get("imageWidthPx") ?? 0);
@@ -88,6 +113,7 @@ export async function POST(req: Request) {
 
   const outcome = await runLiveCheck(deps, {
     sessionId,
+    runId,
     passcode: typeof passcode === "string" ? passcode : null,
     capture: {
       faceDetected,

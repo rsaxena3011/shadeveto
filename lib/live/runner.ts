@@ -41,6 +41,20 @@
  *    skipped and the reason stated; the receipt's totals always
  *    carry whatever the preview actually cost.
  *
+ * Run identity (2026-10-30 hang fix): the client generates a
+ * run id before its first request for a run and sends it with
+ * every request for that run. The store records the id against
+ * the owning session at reservation time and against the run's
+ * terminal outcome when it finishes. A repeat request carrying
+ * the same id therefore replays a finished run or resumes an
+ * active one THROUGH THE RECORD, never through the session
+ * cookie alone: the cookie is set on the run's own response, so
+ * when that response was lost (the filmed hang) the browser held
+ * no session for its run, and any duplicate execution of the
+ * same POST arrived as a brand-new session and created a second
+ * task at a second charge. A request carrying a NEW id is a new
+ * run, deliberately, and goes through every check below.
+ *
  * Outcomes are explicit so the route can answer honestly: a
  * receipt (including CAN'T TELL receipts for gate rejections and
  * failed tasks), a cap refusal, a photo refusal, a pending note
@@ -97,6 +111,13 @@ export interface LiveRunRequest {
   capture: CaptureMeasurement;
   photo: LivePhoto | null;
   ownedShades: ShadeEntry[];
+  /**
+   * The client-chosen identity of this run, generated before
+   * the first request and repeated on every collect (see the
+   * header). Absent on requests from clients that predate run
+   * ids; those keep the cookie-session behaviour exactly.
+   */
+  runId?: string | null;
 }
 
 /**
@@ -164,11 +185,48 @@ export async function runLiveCheck(
 
   const { store } = deps;
   store.sweepExpired();
-  const session = store.session(req.sessionId);
+  let session = store.session(req.sessionId);
+
+  // Run identity, checked only now that the passcode has passed:
+  // a recorded outcome must never be replayed to a request that
+  // did not clear the gate. A finished record replays verbatim.
+  // An active record resumes through its OWNING session, which
+  // is the whole point: the request's cookie session may be a
+  // fresh one minted because the original response (the one
+  // carrying the cookie) never arrived. An active record whose
+  // owning session holds nothing anymore (its unknown-charge
+  // hold expired in the sweep above) is rebound to this session
+  // and the request proceeds as the run's fresh start.
+  const runId = req.runId ?? null;
+  const runRecord = runId ? store.runRecord(runId) : undefined;
+  if (runRecord?.outcome) return runRecord.outcome;
+  if (runRecord && runId) {
+    const owner = store.session(runRecord.sessionId);
+    if (
+      owner.inFlight ||
+      owner.startingEntryId ||
+      owner.unknownChargeEntryId
+    ) {
+      session = owner;
+    } else {
+      store.beginRun(runId, session.id);
+    }
+  }
+
+  // Terminal outcomes of an identified run are recorded against
+  // its id, so a repeat of this same request replays them
+  // instead of re-executing. Pending is not terminal: the run is
+  // still active and the record stays open for its collect.
+  const finish = (outcome: LiveRunOutcome): LiveRunOutcome => {
+    if (runId && outcome.kind !== "pending") {
+      store.finishRun(runId, outcome);
+    }
+    return outcome;
+  };
 
   // 2. Recovery before novelty.
   if (session.inFlight) {
-    return pollAndFinish(deps, session, true);
+    return finish(await pollAndFinish(deps, session, true));
   }
   if (session.startingEntryId) {
     return { kind: "pending", message: PENDING_MESSAGE };
@@ -235,22 +293,27 @@ export async function runLiveCheck(
   );
   session.entryIds.push(entry.id);
   session.startingEntryId = entry.id;
+  // The run exists from here on: bind its id (when it carries
+  // one) to this session before any await, so even a request
+  // that dies mid-flight leaves a record a repeat can resume or
+  // replay instead of a second charge.
+  if (runId) store.beginRun(runId, session.id);
 
-  if (store.sessionCommitted(req.sessionId) > deps.caps.sessionCapUnits) {
+  if (store.sessionCommitted(session.id) > deps.caps.sessionCapUnits) {
     store.ledger.release(entry.id);
     session.startingEntryId = null;
-    return {
+    return finish({
       kind: "cap",
       message: `Live mode is paused for this session: it has reached its spend cap of ${deps.caps.sessionCapUnits} units. Fixture mode above still works and spends nothing.`,
-    };
+    });
   }
   if (store.globalCommitted() > deps.caps.globalCapUnits) {
     store.ledger.release(entry.id);
     session.startingEntryId = null;
-    return {
+    return finish({
       kind: "cap",
       message: `Live mode is paused: the shared live spend cap of ${deps.caps.globalCapUnits} units has been reached. Fixture mode above still works and spends nothing.`,
-    };
+    });
   }
 
   // 5. Balance before the call.
@@ -270,11 +333,11 @@ export async function runLiveCheck(
   } catch {
     store.ledger.release(entry.id);
     session.startingEntryId = null;
-    return {
+    return finish({
       kind: "refused",
       message:
         "The photo upload failed before any task was created, so no units were spent. Check the connection and try again.",
-    };
+    });
   }
 
   // 6. Create exactly once. A answered refusal (HTTP status) means
@@ -291,19 +354,19 @@ export async function runLiveCheck(
     session.startingEntryId = null;
     if (err instanceof YouCamError && err.status !== null) {
       store.ledger.release(entry.id);
-      return {
+      return finish({
         kind: "refused",
         message:
           "The provider refused to start the reading, so no task exists and no units were spent. Task creation is never retried automatically, because a duplicate would charge twice; you can start again deliberately.",
-      };
+      });
     }
     session.unknownChargeEntryId = entry.id;
     session.unknownChargeAt = Date.now();
-    return {
+    return finish({
       kind: "pending",
       message:
         "The start request was interrupted, so the reading may or may not exist. This session is holding its reservation rather than risking a second charge; the hold clears on its own.",
-    };
+    });
   }
 
   // Record the run BEFORE polling: from here on, any timeout or
@@ -320,7 +383,7 @@ export async function runLiveCheck(
   };
   session.startingEntryId = null;
 
-  return pollAndFinish(deps, session, false);
+  return finish(await pollAndFinish(deps, session, false));
 }
 
 /**
