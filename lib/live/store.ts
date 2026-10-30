@@ -8,9 +8,13 @@
  * the next attempt would create a SECOND task and charge twice.
  * So the moment a task id exists, it is recorded here against the
  * session, together with everything needed to finish the run
- * (capture measurement, owned shades, balance read, ledger entry).
- * Any later request from the same session resumes that task by id;
- * creation is never repeated for a run already in flight.
+ * (capture measurement, owned shades, balance read, ledger entry,
+ * and the photo itself: provider uploads are scoped per feature,
+ * so finishing a BUY run with its try-on preview means uploading
+ * the same photo again under the makeup-vto feature, and a resumed
+ * run must still be able to do that). Any later request from the
+ * same session resumes that task by id; creation is never repeated
+ * for a run already in flight.
  *
  * State is in-memory, one process. That is a real limit, stated
  * plainly: a server restart loses the in-flight pointer and the
@@ -34,12 +38,25 @@ import { UnitLedger, type LedgerEntry } from "../ledger/ledger.ts";
  * provider's 24-hour file retention. */
 export const IN_FLIGHT_TTL_MS = 2 * 60 * 60 * 1000;
 
+/** The uploaded photo, kept with the run so a resumed run can
+ * finish exactly like a fresh one. Bounded by the runner's photo
+ * size cap and by the in-flight TTL below. */
+export interface InFlightPhoto {
+  bytes: Uint8Array;
+  contentType: string;
+  fileName?: string;
+}
+
 export interface InFlightRun {
   taskId: string;
   fileId: string;
   ledgerEntryId: string;
   capture: CaptureMeasurement;
   ownedShades: ShadeEntry[];
+  /** The photo the reading was taken from. Null only on records
+   * written before the preview step existed; such a run finishes
+   * without a preview rather than failing. */
+  photo: InFlightPhoto | null;
   /** Provider balance read before the task was created, if known. */
   balanceBefore: number | null;
   startedAt: number;

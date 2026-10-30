@@ -264,6 +264,25 @@ main {
   border: 1px solid var(--line);
 }
 
+.vto-preview {
+  margin: 1rem 0;
+}
+
+.vto-preview img {
+  display: block;
+  max-width: 320px;
+  width: 100%;
+  height: auto;
+  border-radius: 0.375rem;
+  border: 1px solid var(--line);
+}
+
+.vto-preview figcaption {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-top: 0.5rem;
+}
+
 .live-used-note {
   font-weight: 700;
   color: var(--muted);

@@ -12,9 +12,9 @@ export default function HomePage() {
         <p className="hero-sub">
           One foundation, checked against your skin and your shelf,
           so the answer can be BUY, SHADE-RISK, or NO, with the
-          reason shown. A try-on render is available as a labelled
-          preview only, and never feeds a verdict. Built on the
-          YouCam API.
+          reason shown. On a live BUY, a try-on render of the
+          winning shade is shown as a labelled preview only, and
+          never feeds a verdict. Built on the YouCam API.
         </p>
         <p>
           <Link href="/check" className="hero-cta">
@@ -41,9 +41,11 @@ export default function HomePage() {
             colour distance.
           </li>
           <li>
-            <strong>Preview.</strong> A makeup try-on render is
-            available as a labelled preview only. It never feeds a
-            verdict: colour distance and the cluster rule decide.
+            <strong>Preview.</strong> On a live BUY receipt, a
+            makeup try-on render of the winning shade runs as a
+            labelled preview, for 1 extra unit. It is rendered
+            after the verdict and never feeds it: colour distance
+            and the cluster rule decide.
           </li>
           <li>
             <strong>Receipt.</strong> BUY, SHADE-RISK, NO, or

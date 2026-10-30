@@ -28,6 +28,18 @@
  *    leaves a resumable record, not a lost charge.
  * 7. Poll server-side every 2.5 seconds (the client's default),
  *    inside the provider's 250 requests per 300 seconds per key.
+ * 8. Preview last, and only on a BUY. When (and only when) the
+ *    finished receipt says BUY, one Makeup VTO render of the
+ *    winning shade is attempted under the same discipline as the
+ *    reading: its own ledger reservation, the same caps, a fresh
+ *    upload of the same photo under the makeup-vto feature
+ *    (uploads are feature-scoped), creation never retried, and
+ *    settlement from the measured balance delta. The render is a
+ *    labelled preview: it is produced AFTER the verdict exists
+ *    and can never change it. Any preview failure degrades to the
+ *    receipt the engine produced, with the planner step logged
+ *    skipped and the reason stated; the receipt's totals always
+ *    carry whatever the preview actually cost.
  *
  * Outcomes are explicit so the route can answer honestly: a
  * receipt (including CAN'T TELL receipts for gate rejections and
@@ -54,17 +66,24 @@ import {
   createYouCamClient,
   parseSkinToneResult,
   pollTask,
+  runMakeupVto,
   uploadFile,
   YouCamError,
   YouCamTaskError,
   YouCamTaskTimeoutError,
   type YouCamClient,
 } from "../youcam/client.ts";
+import { foundationVtoParams } from "../youcam/types.ts";
 import { youcamBearerForLiveRun } from "../youcam/credential.ts";
 import { UnitInfoBalanceProvider } from "./balance.ts";
 import type { LiveSpendCaps } from "./limits.ts";
 import { liveSpendCaps } from "./limits.ts";
-import { getLiveStore, type LiveSession, type LiveStore } from "./store.ts";
+import {
+  getLiveStore,
+  type InFlightPhoto,
+  type LiveSession,
+  type LiveStore,
+} from "./store.ts";
 
 export interface LivePhoto {
   bytes: Uint8Array;
@@ -80,6 +99,21 @@ export interface LiveRunRequest {
   ownedShades: ShadeEntry[];
 }
 
+/**
+ * A finished Makeup VTO preview render, carried next to the
+ * receipt rather than inside it: the Receipt is the decision
+ * engine's output and the engine never renders, so the preview
+ * travels on the live outcome the same way the balance reads do.
+ * The URL is the provider's render link; per the client docs it
+ * expires, so it is shown at receipt time, not archived.
+ */
+export interface LivePreview {
+  imageUrl: string;
+  /** "Brand ShadeName" of the winning shade that was rendered. */
+  shadeLabel: string;
+  colorHex: string;
+}
+
 export type LiveRunOutcome =
   | { kind: "fixture" }
   | {
@@ -87,6 +121,8 @@ export type LiveRunOutcome =
       receipt: Receipt;
       balanceBefore: number | null;
       balanceAfter: number | null;
+      /** The BUY preview render, when one was produced. */
+      preview: LivePreview | null;
     }
   | { kind: "cap"; message: string }
   | { kind: "refused"; message: string }
@@ -161,6 +197,7 @@ export async function runLiveCheck(
       }),
       balanceBefore: null,
       balanceAfter: null,
+      preview: null,
     };
   }
 
@@ -277,6 +314,7 @@ export async function runLiveCheck(
     ledgerEntryId: entry.id,
     capture: req.capture,
     ownedShades: req.ownedShades,
+    photo: req.photo,
     balanceBefore,
     startedAt: Date.now(),
   };
@@ -380,18 +418,249 @@ async function pollAndFinish(
     note = `Live mode: the Skin Tone call completed and was charged ${actualUnits} units, but its result carried no readable skin_color, so there is no reading to judge.`;
   }
 
+  const receipt = runDecision({
+    capture: inFlight.capture,
+    skinTone,
+    catalog: deps.catalog,
+    ownedShades: inFlight.ownedShades,
+    readingSource: { kind: "live", unitsSpent: actualUnits, note },
+  });
+
+  // The verdict exists now and nothing below can change it. Only
+  // a BUY earns the try-on preview; every other verdict returns
+  // the receipt exactly as the engine produced it.
+  if (receipt.verdict !== "BUY") {
+    return {
+      kind: "receipt",
+      receipt,
+      balanceBefore: inFlight.balanceBefore,
+      balanceAfter,
+      preview: null,
+    };
+  }
+  const finished = await attachBuyPreview(
+    deps,
+    session,
+    inFlight.photo,
+    receipt,
+    balanceAfter,
+  );
   return {
     kind: "receipt",
-    receipt: runDecision({
-      capture: inFlight.capture,
-      skinTone,
-      catalog: deps.catalog,
-      ownedShades: inFlight.ownedShades,
-      readingSource: { kind: "live", unitsSpent: actualUnits, note },
-    }),
+    receipt: finished.receipt,
     balanceBefore: inFlight.balanceBefore,
-    balanceAfter,
+    balanceAfter: finished.balanceAfter,
+    preview: finished.preview,
   };
+}
+
+/**
+ * Return a copy of the receipt whose makeup-vto-preview planner
+ * step (and, when the preview cost anything, the run total) tells
+ * the truth about the render attempt. This is the runner's own
+ * accounting, applied to the receipt it hands back: the engine
+ * emits the step as skipped because the ENGINE never renders, and
+ * the runner, which owns live spend, records what the live run
+ * actually did. Verdict, headline, ranking, cluster and every
+ * other step are copied untouched.
+ */
+function withVtoStep(
+  receipt: Receipt,
+  patch: { outcome: "done" | "skipped"; unitsSpent: number; why: string },
+): Receipt {
+  return {
+    ...receipt,
+    unitsSpent: receipt.unitsSpent + patch.unitsSpent,
+    plannerLog: receipt.plannerLog.map((step) =>
+      step.step === "makeup-vto-preview"
+        ? {
+            ...step,
+            outcome: patch.outcome,
+            unitsSpent: patch.unitsSpent,
+            why: patch.why,
+          }
+        : step,
+    ),
+  };
+}
+
+/**
+ * The BUY-only Makeup VTO preview (header step 8). Renders the
+ * winning shade (the cluster winner, ranking position 1) on the
+ * uploaded photo at the study's fixed settings and settles from
+ * the balance delta, exactly like the reading. Every failure
+ * lands as a skipped planner step with the honest reason and the
+ * receipt otherwise intact; nothing here retries, and nothing
+ * here can touch the verdict, which was final before this ran.
+ */
+async function attachBuyPreview(
+  deps: LiveDeps,
+  session: LiveSession,
+  photo: InFlightPhoto | null,
+  receipt: Receipt,
+  balanceAfterReading: number | null,
+): Promise<{
+  receipt: Receipt;
+  balanceAfter: number | null;
+  preview: LivePreview | null;
+}> {
+  const { store } = deps;
+  const winner = receipt.ranking[0]?.shade;
+  const vtoCost = TASK_COSTS["makeup-vto"];
+  if (!winner) {
+    // A BUY always carries a ranking; if that ever stopped being
+    // true, the receipt stands as produced rather than guessing.
+    return { receipt, balanceAfter: balanceAfterReading, preview: null };
+  }
+  if (!photo) {
+    return {
+      receipt: withVtoStep(receipt, {
+        outcome: "skipped",
+        unitsSpent: 0,
+        why: "Not run: the uploaded photo is no longer available to render against, so no preview was attempted and nothing was spent.",
+      }),
+      balanceAfter: balanceAfterReading,
+      preview: null,
+    };
+  }
+
+  // Reserve, then caps, same as the reading: the reservation is
+  // what the caps are checked against, so a session whose
+  // readings already fill its cap skips the preview instead of
+  // slipping past it.
+  const entry = store.ledger.reserve(
+    "makeup-vto",
+    "judge",
+    "Live Makeup VTO preview on a BUY receipt (judge session)",
+  );
+  session.entryIds.push(entry.id);
+  if (
+    store.sessionCommitted(session.id) > deps.caps.sessionCapUnits ||
+    store.globalCommitted() > deps.caps.globalCapUnits
+  ) {
+    store.ledger.release(entry.id);
+    return {
+      receipt: withVtoStep(receipt, {
+        outcome: "skipped",
+        unitsSpent: 0,
+        why: "Not run: the live spend caps leave no room for the preview, so no render was attempted and nothing was spent.",
+      }),
+      balanceAfter: balanceAfterReading,
+      preview: null,
+    };
+  }
+
+  const balanceDelta = (after: number | null): number | null =>
+    balanceAfterReading !== null && after !== null
+      ? balanceAfterReading - after
+      : null;
+
+  try {
+    // Uploads are scoped per feature: the skin-tone file id
+    // cannot serve a makeup-vto task, so the same photo goes up
+    // once more under the makeup-vto feature.
+    const vtoFileId = await uploadFile(
+      deps.client,
+      "makeup-vto",
+      photo.bytes,
+      photo.contentType,
+      photo.fileName ?? "capture.jpg",
+    );
+    const result = await runMakeupVto(
+      deps.client,
+      vtoFileId,
+      foundationVtoParams(winner.hex),
+    );
+    const balanceFinal = await deps.balance.getBalanceUnits();
+    const settled = balanceDelta(balanceFinal) ?? vtoCost;
+    store.ledger.settle(entry.id, settled);
+    return {
+      receipt: withVtoStep(receipt, {
+        outcome: "done",
+        unitsSpent: settled,
+        why: `Rendered a labelled preview of the winning shade, ${winner.brand} ${winner.shadeName} (${winner.hex}), on the uploaded photo at the study's fixed settings. The render is a preview only: it was produced after the verdict and did not feed it; the verdict rests on the colour distances above.`,
+      }),
+      balanceAfter: balanceFinal ?? balanceAfterReading,
+      preview: {
+        imageUrl: result.imageUrl,
+        shadeLabel: `${winner.brand} ${winner.shadeName}`,
+        colorHex: winner.hex,
+      },
+    };
+  } catch (err) {
+    const balanceFinal = await deps.balance.getBalanceUnits();
+    const delta = balanceDelta(balanceFinal);
+    const balanceAfter = balanceFinal ?? balanceAfterReading;
+    if (err instanceof YouCamTaskTimeoutError) {
+      // The render may still finish and charge, so its cost is
+      // counted: the measured delta when one is already visible,
+      // otherwise the verified per-call cost, per the same
+      // finished-but-unchecked rule the reading follows.
+      const settled = delta !== null && delta > 0 ? delta : vtoCost;
+      store.ledger.settle(entry.id, settled);
+      return {
+        receipt: withVtoStep(receipt, {
+          outcome: "skipped",
+          unitsSpent: settled,
+          why: `The preview render did not finish in time, so no preview is shown. The provider charges for tasks that finish, so its ${settled} unit${settled === 1 ? "" : "s"} are counted as spent.`,
+        }),
+        balanceAfter,
+        preview: null,
+      };
+    }
+    if (err instanceof YouCamTaskError) {
+      // Failed tasks are charged and then refunded in full
+      // (proven in the study ledger), so the preview spent the
+      // measured delta, normally zero.
+      const settled = delta ?? 0;
+      if (settled > 0) {
+        store.ledger.settle(entry.id, settled);
+      } else {
+        store.ledger.release(entry.id);
+      }
+      return {
+        receipt: withVtoStep(receipt, {
+          outcome: "skipped",
+          unitsSpent: settled,
+          why:
+            settled > 0
+              ? `The preview render failed at the provider, so no preview is shown. It was charged ${settled} unit${settled === 1 ? "" : "s"} before failing.`
+              : "The preview render failed at the provider, so no preview is shown. Failed tasks are refunded in full, so the preview spent nothing.",
+        }),
+        balanceAfter,
+        preview: null,
+      };
+    }
+    if (err instanceof YouCamError && err.status !== null) {
+      // An answered refusal (the upload ticket, the upload, or
+      // the create): no task exists, nothing was charged.
+      store.ledger.release(entry.id);
+      return {
+        receipt: withVtoStep(receipt, {
+          outcome: "skipped",
+          unitsSpent: 0,
+          why: "The preview could not be started: the provider refused the upload or the render request, so no preview is shown and nothing was spent.",
+        }),
+        balanceAfter,
+        preview: null,
+      };
+    }
+    // What remains: the render finished but returned no usable
+    // image, or the attempt's outcome is genuinely unknown. A
+    // finished task consumes its units, so settle at the measured
+    // delta, else the verified cost, and say so on the receipt.
+    const settled = delta ?? vtoCost;
+    store.ledger.settle(entry.id, settled);
+    return {
+      receipt: withVtoStep(receipt, {
+        outcome: "skipped",
+        unitsSpent: settled,
+        why: `The preview render produced no usable image, so no preview is shown. Its ${settled} unit${settled === 1 ? "" : "s"} are counted as spent.`,
+      }),
+      balanceAfter,
+      preview: null,
+    };
+  }
 }
 
 /**

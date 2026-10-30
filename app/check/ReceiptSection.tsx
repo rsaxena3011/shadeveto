@@ -17,12 +17,26 @@ import type { ReceiptView } from "../../lib/ui/receipt-view.ts";
 
 const RANKING_PREVIEW_COUNT = 10;
 
+/**
+ * A live BUY preview render, passed only by the live panel. It is
+ * deliberately NOT part of the receipt view model: the view model
+ * carries engine output only, and the render is a post-verdict
+ * artifact of the live run. Fixture mode never passes one.
+ */
+export interface ReceiptPreview {
+  imageUrl: string;
+  shadeLabel: string;
+  colorHex: string;
+}
+
 export default function ReceiptSection({
   view,
   rankingHeading,
+  preview,
 }: {
   view: ReceiptView;
   rankingHeading: string;
+  preview?: ReceiptPreview | null;
 }) {
   const [showAllRanking, setShowAllRanking] = useState(false);
   const rankingRows = showAllRanking
@@ -37,6 +51,19 @@ export default function ReceiptSection({
       <h2 className="receipt-headline">{view.headline}</h2>
       <p className="reason-tag">Reason: {view.reasonTag}</p>
       <p>{view.measuredToneText}</p>
+
+      {preview ? (
+        <figure className="vto-preview">
+          <img
+            src={preview.imageUrl}
+            alt={`Makeup try-on preview of ${preview.shadeLabel} on your photo`}
+          />
+          <figcaption>
+            Preview only: this render of {preview.shadeLabel} (
+            {preview.colorHex}) did not decide the verdict.
+          </figcaption>
+        </figure>
+      ) : null}
 
       <h3>Thresholds the engine applied</h3>
       <dl className="thresholds">

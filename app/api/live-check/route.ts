@@ -108,6 +108,7 @@ export async function POST(req: Request) {
         receipt: outcome.receipt,
         balanceBefore: outcome.balanceBefore,
         balanceAfter: outcome.balanceAfter,
+        preview: outcome.preview,
       });
     case "cap":
       return respond({ mode: "live", outcome: "cap", message: outcome.message });

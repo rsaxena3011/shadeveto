@@ -30,7 +30,9 @@ export default function CheckPage() {
           real units under server-side caps, and prints a receipt
           labelled LIVE from the same engine, ranked against the
           licensed shade catalog (The Pudding foundation shades
-          dataset, 2018 swatches, MIT License).
+          dataset, 2018 swatches, MIT License). A BUY receipt also
+          renders a labelled try-on preview of the winning shade
+          for 1 extra unit; the preview never affects the verdict.
         </p>
       </section>
       <LiveCheck />

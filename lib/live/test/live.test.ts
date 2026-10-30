@@ -1,6 +1,12 @@
 import { studyFixtureCatalog, studyTone } from "../../decision/fixtures.ts";
 import { runDecision } from "../../decision/decision.ts";
 import type { CaptureMeasurement } from "../../decision/capture.ts";
+import {
+  parseCatalog,
+  type Catalog,
+  type ShadeEntry,
+} from "../../catalog/types.ts";
+import { hexToLab } from "../../decision/color.ts";
 import type { BalanceProvider } from "../../ledger/ledger.ts";
 import {
   createYouCamClient,
@@ -33,6 +39,12 @@ import { buildOwnedShade } from "../../ui/fixture-session.ts";
  *   payload flows through runDecision to the same verdict the
  *   fixture replay gives, labelled LIVE, with the balance delta
  *   settled as the spend.
+ * - the Makeup VTO preview fires only on a live BUY: it renders
+ *   the winning shade for 1 extra unit settled from the balance
+ *   delta, and any preview failure (provider error, timeout)
+ *   degrades to a skipped planner step with the receipt intact.
+ *   Non-BUY verdicts never create a VTO task, and fixture-mode
+ *   receipts keep the engine's skipped preview line untouched.
  */
 
 let pass = 0;
@@ -80,22 +92,35 @@ const TONE2_SUCCESS = {
   },
 };
 
+/** A Makeup VTO success payload in the verified shape: the
+ * render URL nests under results.image_url. */
+const VTO_SUCCESS = {
+  data: {
+    task_status: "success",
+    results: { image_url: "https://img.example/vto-preview.jpg" },
+  },
+};
+
 interface ApiScript {
   ticketPosts: number;
   puts: number;
   createPosts: number;
+  skinCreatePosts: number;
+  vtoCreatePosts: number;
   statusGets: number;
   total: number;
 }
 
 function scriptedApi(
-  statusHandler: (script: ApiScript) => Response,
+  statusHandler: (script: ApiScript, url: string) => Response,
   opts?: { createStatus?: number; createThrows?: boolean },
 ): { client: YouCamClient; script: ApiScript } {
   const script: ApiScript = {
     ticketPosts: 0,
     puts: 0,
     createPosts: 0,
+    skinCreatePosts: 0,
+    vtoCreatePosts: 0,
     statusGets: 0,
     total: 0,
   };
@@ -122,14 +147,20 @@ function scriptedApi(
     }
     if (url.includes("/task/") && method === "POST") {
       script.createPosts += 1;
+      if (url.includes("/task/makeup-vto")) script.vtoCreatePosts += 1;
+      if (url.includes("/task/skin-tone")) script.skinCreatePosts += 1;
       if (opts?.createThrows) throw new TypeError("network down");
       if (opts?.createStatus && opts.createStatus !== 200) {
         return jsonResponse({ error: "refused" }, opts.createStatus);
       }
-      return jsonResponse({ data: { task_id: "task-1" } });
+      return jsonResponse({
+        data: {
+          task_id: url.includes("/task/makeup-vto") ? "task-vto" : "task-1",
+        },
+      });
     }
     script.statusGets += 1;
-    return statusHandler(script);
+    return statusHandler(script, url);
   }) as unknown as typeof fetch;
   const client = createYouCamClient({
     apiKey: "hsurr:test-surrogate",
@@ -218,10 +249,18 @@ async function main() {
   }
 
   // 2. Live wiring: the study's real payload shape through the
-  // same runDecision path as the fixture replay.
+  // same runDecision path as the fixture replay. tone2 is a BUY
+  // on the fixture catalog, so the run also earns its Makeup VTO
+  // preview: 20 units for the reading, 1 more for the render,
+  // each settled from its own balance delta.
   {
-    const { client, script } = scriptedApi(() => jsonResponse(TONE2_SUCCESS));
-    const { deps, store } = makeDeps(client, new QueueBalance([900, 880]));
+    const { client, script } = scriptedApi((_script, url) =>
+      jsonResponse(url.includes("makeup-vto") ? VTO_SUCCESS : TONE2_SUCCESS),
+    );
+    const { deps, store } = makeDeps(
+      client,
+      new QueueBalance([900, 880, 879]),
+    );
     const outcome = await runLiveCheck(deps, req());
     check(outcome.kind === "receipt", "live run produces a receipt");
     if (outcome.kind === "receipt") {
@@ -238,19 +277,38 @@ async function main() {
         ownedShades: [],
       });
       check(
-        receipt.verdict === fixtureReceipt.verdict &&
-          receipt.margin === fixtureReceipt.margin,
-        "live verdict and margin equal the fixture replay of the same reading",
+        receipt.verdict === "BUY" &&
+          receipt.verdict === fixtureReceipt.verdict &&
+          receipt.margin === fixtureReceipt.margin &&
+          receipt.headline === fixtureReceipt.headline,
+        "live BUY verdict, margin and headline equal the fixture replay of the same reading (the preview changed none of them)",
       );
       const toneStep = receipt.plannerLog.find((s) => s.step === "skin-tone");
       check(
         toneStep?.outcome === "done" && toneStep.unitsSpent === 20,
         "planner log records the live call as done with its real spend",
       );
-      check(receipt.unitsSpent === 20, "receipt total is the settled spend");
+      const vtoStep = receipt.plannerLog.find(
+        (s) => s.step === "makeup-vto-preview",
+      );
       check(
-        outcome.balanceBefore === 900 && outcome.balanceAfter === 880,
-        "balance was read before and after the call",
+        vtoStep?.outcome === "done" &&
+          vtoStep.unitsSpent === 1 &&
+          vtoStep.why.includes("did not feed it"),
+        "planner log records the preview as done with its 1 unit, labelled as never feeding the verdict",
+      );
+      check(
+        receipt.unitsSpent === 21,
+        "receipt total is the settled spend: 20 for the reading plus 1 for the preview",
+      );
+      check(
+        outcome.balanceBefore === 900 && outcome.balanceAfter === 879,
+        "balance was read before the reading and again after the preview",
+      );
+      check(
+        outcome.preview?.imageUrl === "https://img.example/vto-preview.jpg" &&
+          outcome.preview.colorHex === receipt.ranking[0].shade.hex,
+        "the outcome carries the preview render of the winning shade",
       );
       const view = buildReceiptView(receipt);
       check(
@@ -258,15 +316,21 @@ async function main() {
         "receipt screen labels the run LIVE",
       );
       check(
-        view.allLines.some((l) => l.includes("Total units spent: 20")),
-        "receipt screen shows the real units spent",
+        view.allLines.some((l) => l.includes("Total units spent: 21")),
+        "receipt screen shows the real units spent, preview included",
       );
     }
     check(
-      script.ticketPosts === 1 && script.puts === 1 && script.createPosts === 1,
-      "photo uploaded once, one task created",
+      script.ticketPosts === 2 &&
+        script.puts === 2 &&
+        script.skinCreatePosts === 1 &&
+        script.vtoCreatePosts === 1,
+      "photo uploaded once per feature (uploads are feature-scoped), one task created per feature",
     );
-    check(store.globalCommitted() === 20, "ledger settled at the balance delta");
+    check(
+      store.globalCommitted() === 21,
+      "ledger settled at the balance deltas: 20 reading + 1 preview",
+    );
   }
 
   // 3. Attack: exactly-60% face on the live path is rejected by
@@ -362,12 +426,15 @@ async function main() {
   // exactly once across both attempts, reservation held between.
   {
     let done = false;
-    const { client, script } = scriptedApi(() =>
+    const { client, script } = scriptedApi((_script, url) =>
       done
-        ? jsonResponse(TONE2_SUCCESS)
+        ? jsonResponse(url.includes("makeup-vto") ? VTO_SUCCESS : TONE2_SUCCESS)
         : jsonResponse({ data: { task_status: "running" } }),
     );
-    const { deps, store } = makeDeps(client, new QueueBalance([500, 480]));
+    const { deps, store } = makeDeps(
+      client,
+      new QueueBalance([500, 480, 479]),
+    );
     const first = await runLiveCheck(deps, req());
     check(first.kind === "pending", "slow task reports pending, not failure");
     check(
@@ -380,8 +447,18 @@ async function main() {
       second.kind === "receipt" && second.receipt.measuredToneHex === "#a77d60",
       "resume collects the reading from the same task",
     );
-    check(script.createPosts === 1, "resume never creates a second task");
-    check(store.globalCommitted() === 20, "resumed run settles once, at the delta");
+    check(
+      script.skinCreatePosts === 1,
+      "resume never creates a second reading task",
+    );
+    check(
+      second.kind === "receipt" && second.preview !== null,
+      "resumed BUY still renders its preview, from the photo kept on the run record (the resume request itself carries no photo)",
+    );
+    check(
+      store.globalCommitted() === 21,
+      "resumed run settles once per task, at the deltas: 20 reading + 1 preview",
+    );
   }
 
   // 8. Task-level failure: a provider error is a service failure,
@@ -408,10 +485,11 @@ async function main() {
   }
 
   // 9. Live owned-bottle path: the full engine runs on a live
-  // reading, owned check first, exactly as in fixture mode.
+  // reading, owned check first, exactly as in fixture mode. A NO
+  // verdict never earns a preview: no VTO task, no extra spend.
   {
-    const { client } = scriptedApi(() => jsonResponse(TONE2_SUCCESS));
-    const { deps } = makeDeps(client, new QueueBalance([900, 880]));
+    const { client, script } = scriptedApi(() => jsonResponse(TONE2_SUCCESS));
+    const { deps, store } = makeDeps(client, new QueueBalance([900, 880]));
     const owned = buildOwnedShade("#a77d60", "My current foundation");
     check(!("error" in owned), "owned shade fixture builds");
     if (!("error" in owned)) {
@@ -425,6 +503,14 @@ async function main() {
           outcome.receipt.reasonTag === "already-own-it" &&
           outcome.receipt.fixtureMode === false,
         "live reading plus an owned match ends in NO, already own it",
+      );
+      check(
+        outcome.kind === "receipt" &&
+          outcome.preview === null &&
+          script.vtoCreatePosts === 0 &&
+          outcome.receipt.unitsSpent === 20 &&
+          store.globalCommitted() === 20,
+        "NO verdict: no preview attempted, no VTO task created, spend stays at the reading's 20",
       );
     }
   }
@@ -504,6 +590,176 @@ async function main() {
     check(
       overridden.sessionCapUnits === 40 && overridden.globalCapUnits === 300,
       "env override applies per cap; junk falls back to the default",
+    );
+  }
+
+  // 13. Preview failure at the provider: the BUY receipt stands
+  // exactly as the engine produced it, the preview step is
+  // logged skipped with the honest reason, and the refunded
+  // render adds nothing to the spend.
+  {
+    const { client, script } = scriptedApi((_script, url) =>
+      url.includes("makeup-vto")
+        ? jsonResponse({
+            data: { task_status: "error", error_message: "render failed" },
+          })
+        : jsonResponse(TONE2_SUCCESS),
+    );
+    const { deps, store } = makeDeps(
+      client,
+      new QueueBalance([900, 880, 880]),
+    );
+    const outcome = await runLiveCheck(deps, req());
+    check(
+      outcome.kind === "receipt" && outcome.receipt.verdict === "BUY",
+      "preview failure still returns the BUY receipt",
+    );
+    if (outcome.kind === "receipt") {
+      const fixtureReceipt = runDecision({
+        capture: GOOD_CAPTURE,
+        skinTone: studyTone("tone2").result,
+        catalog: studyFixtureCatalog(),
+        ownedShades: [],
+      });
+      check(
+        outcome.receipt.headline === fixtureReceipt.headline &&
+          outcome.receipt.margin === fixtureReceipt.margin,
+        "preview failure leaves the verdict content identical to the engine's own receipt",
+      );
+      const vtoStep = outcome.receipt.plannerLog.find(
+        (s) => s.step === "makeup-vto-preview",
+      );
+      check(
+        vtoStep?.outcome === "skipped" &&
+          vtoStep.unitsSpent === 0 &&
+          vtoStep.why.includes("failed at the provider"),
+        "failed preview is logged skipped with the reason stated, spent 0 (failed tasks are refunded)",
+      );
+      check(
+        outcome.preview === null && outcome.receipt.unitsSpent === 20,
+        "no preview image, and the total stays at the reading's 20",
+      );
+    }
+    check(
+      script.vtoCreatePosts === 1,
+      "the failed preview was attempted exactly once, never retried",
+    );
+    check(
+      store.globalCommitted() === 20,
+      "ledger: the refunded preview commits nothing beyond the reading",
+    );
+  }
+
+  // 14. Preview timeout: no image, the step is logged skipped,
+  // and the render's unit is still counted, because a task that
+  // finishes after the wait is charged (the finished-but-
+  // unchecked rule the reading itself follows).
+  {
+    const { client } = scriptedApi((_script, url) =>
+      url.includes("makeup-vto")
+        ? jsonResponse({ data: { task_status: "running" } })
+        : jsonResponse(TONE2_SUCCESS),
+    );
+    const { deps, store } = makeDeps(client, new QueueBalance([900, 880]));
+    const outcome = await runLiveCheck(deps, req());
+    check(
+      outcome.kind === "receipt" && outcome.receipt.verdict === "BUY",
+      "preview timeout still returns the BUY receipt",
+    );
+    if (outcome.kind === "receipt") {
+      const vtoStep = outcome.receipt.plannerLog.find(
+        (s) => s.step === "makeup-vto-preview",
+      );
+      check(
+        vtoStep?.outcome === "skipped" &&
+          vtoStep.unitsSpent === 1 &&
+          vtoStep.why.includes("did not finish in time"),
+        "timed-out preview is logged skipped with its 1 unit counted as spent",
+      );
+      check(
+        outcome.preview === null && outcome.receipt.unitsSpent === 21,
+        "no preview image, and the total tells the truth: 20 reading + 1 counted preview",
+      );
+    }
+    check(
+      store.globalCommitted() === 21,
+      "ledger counts the timed-out preview at its verified cost",
+    );
+  }
+
+  // 15. SHADE-RISK never calls VTO. The catalog is the decision
+  // suite's straddle pair: against tone2 the winner sits inside
+  // the match range near its edge and the second shade sits in
+  // the cluster width but outside the range.
+  {
+    const straddleShade = (
+      id: string,
+      shadeName: string,
+      hex: string,
+    ): ShadeEntry => {
+      const lab = hexToLab(hex);
+      const round3 = (n: number) => Math.round(n * 1000) / 1000;
+      return {
+        id,
+        brand: "FIXTURE Brand",
+        product: "Fixture Foundation (placeholder)",
+        shadeId: id.toUpperCase(),
+        shadeName,
+        hex,
+        lab: { l: round3(lab.l), a: round3(lab.a), b: round3(lab.b) },
+        finish: "satin",
+        source: "C088 study fixture: shade placed to exercise the cluster rule, not a real product",
+        sourceDate: "2026-10-22",
+        reliability: "FIXTURE ONLY: invented to exercise ranking and verdicts. Never a real product.",
+        license: "CC0 (project-authored placeholder)",
+        fixture: true,
+      };
+    };
+    const straddleCatalog: Catalog = parseCatalog({
+      version: 1,
+      shades: [
+        straddleShade("straddle-winner", "Straddle Winner", "#a06e4e"),
+        straddleShade("straddle-outsider", "Straddle Outsider", "#9c6b4a"),
+      ],
+    });
+    const { client, script } = scriptedApi(() => jsonResponse(TONE2_SUCCESS));
+    const { deps, store } = makeDeps(client, new QueueBalance([900, 880]));
+    deps.catalog = straddleCatalog;
+    const outcome = await runLiveCheck(deps, req());
+    check(
+      outcome.kind === "receipt" && outcome.receipt.verdict === "SHADE-RISK",
+      "straddle catalog on a live reading ends in SHADE-RISK",
+    );
+    check(
+      outcome.kind === "receipt" &&
+        outcome.preview === null &&
+        script.vtoCreatePosts === 0 &&
+        script.ticketPosts === 1 &&
+        outcome.receipt.unitsSpent === 20 &&
+        store.globalCommitted() === 20,
+      "SHADE-RISK: no preview attempted, no VTO upload or task, spend stays at the reading's 20",
+    );
+  }
+
+  // 16. Fixture mode is untouched by the preview wiring: the
+  // engine's own receipt keeps the preview step skipped and the
+  // fixture spend at zero.
+  {
+    const fixtureReceipt = runDecision({
+      capture: GOOD_CAPTURE,
+      skinTone: studyTone("tone2").result,
+      catalog: studyFixtureCatalog(),
+      ownedShades: [],
+    });
+    const vtoStep = fixtureReceipt.plannerLog.find(
+      (s) => s.step === "makeup-vto-preview",
+    );
+    check(
+      fixtureReceipt.fixtureMode === true &&
+        vtoStep?.outcome === "skipped" &&
+        vtoStep.unitsSpent === 0 &&
+        fixtureReceipt.unitsSpent === 0,
+      "fixture mode unchanged: preview step stays skipped, fixture spend stays 0",
     );
   }
 

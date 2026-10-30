@@ -27,7 +27,7 @@ import {
 import { faceShareText } from "../../lib/ui/fixture-session.ts";
 import type { Receipt } from "../../lib/decision/decision.ts";
 import { buildReceiptView } from "../../lib/ui/receipt-view.ts";
-import ReceiptSection from "./ReceiptSection";
+import ReceiptSection, { type ReceiptPreview } from "./ReceiptSection";
 
 interface FaceBox {
   width: number;
@@ -142,6 +142,7 @@ type LiveReply =
       mode: "live";
       outcome: "receipt";
       receipt: Receipt;
+      preview: ReceiptPreview | null;
     }
   | {
       mode: "live";
@@ -196,6 +197,9 @@ export default function LiveCheck() {
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  // The BUY preview render rides next to the receipt (it is not
+  // engine output, so it never goes inside the Receipt itself).
+  const [preview, setPreview] = useState<ReceiptPreview | null>(null);
   // Photo measurement is asynchronous (the detector loads WASM and
   // a model file), so it gets its own visible state: without it the
   // panel sat silent for seconds after an upload and a detector
@@ -254,6 +258,7 @@ export default function LiveCheck() {
   async function onPhoto(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     setReceipt(null);
+    setPreview(null);
     setMessage(null);
     setPending(false);
     setPrepared(null);
@@ -308,6 +313,7 @@ export default function LiveCheck() {
         // of leaving the click unexplained.
         setPending(false);
         setReceipt(null);
+        setPreview(null);
         setMessage(
           passcode.trim() === ""
             ? "Live mode needs the judge passcode. Enter it above and try again. Nothing was spent."
@@ -318,6 +324,7 @@ export default function LiveCheck() {
       if (reply.outcome === "receipt") {
         setPending(false);
         setReceipt(reply.receipt);
+        setPreview(reply.preview);
         if (reply.receipt.unitsSpent > 0) {
           setLiveUsed(true);
           try {
@@ -331,11 +338,13 @@ export default function LiveCheck() {
       if (reply.outcome === "provider-error") {
         setPending(false);
         setReceipt(null);
+        setPreview(null);
         setProviderError(reply.message);
         return;
       }
       setPending(reply.outcome === "pending");
       setReceipt(null);
+      setPreview(null);
       setMessage(reply.message);
     } catch {
       setMessage(
@@ -384,7 +393,10 @@ export default function LiveCheck() {
         <p className="step-note">
           With the event passcode, this panel runs ONE real Skin Tone
           reading on a photo you upload, through the same engine as
-          fixture mode, and spends real API units. Spend is capped
+          fixture mode, and spends real API units. On a BUY it also
+          renders a labelled try-on preview of the winning shade for
+          1 extra unit; the preview is a picture only and never
+          affects the verdict. Spend is capped
           on the server per session and in total; a reading that
           times out is collected later, never restarted, so it can
           never charge twice. Without the passcode, this panel does
@@ -490,7 +502,7 @@ export default function LiveCheck() {
             <span className="spinner" aria-hidden="true" />
           </>
         ) : (
-          "Run the live check (spends 20 units)"
+          "Run the live check (spends 20 units, plus 1 for the preview on a BUY)"
         )}
       </button>
       {liveUsed ? (
@@ -540,7 +552,11 @@ export default function LiveCheck() {
 
       {view !== null ? (
         <div ref={receiptRef} className="live-receipt">
-          <ReceiptSection view={view} rankingHeading="Ranking, closest first" />
+          <ReceiptSection
+            view={view}
+            rankingHeading="Ranking, closest first"
+            preview={preview}
+          />
         </div>
       ) : null}
     </div>
