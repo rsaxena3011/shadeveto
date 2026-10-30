@@ -133,7 +133,7 @@ export default function CheckFlow() {
               type="text"
               value={ownedHex}
               onChange={(event) => setOwnedHex(event.target.value)}
-              placeholder="#A77D60"
+              placeholder="Example: #A77D60"
               inputMode="text"
             />
           </label>
@@ -143,7 +143,7 @@ export default function CheckFlow() {
               type="text"
               value={ownedName}
               onChange={(event) => setOwnedName(event.target.value)}
-              placeholder="My current foundation"
+              placeholder="Example: My current foundation"
             />
           </label>
           {ownedHex.trim().length > 0 ? (

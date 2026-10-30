@@ -10,18 +10,21 @@
  * JPG and PNG only, shrunk in the browser to at most 1024 px on
  * the long side and re-encoded as JPEG, then uploaded once. The
  * face measurement comes from the browser's built-in face
- * detector when it exists; without one the panel refuses to
- * start, because the capture gate needs a measurement it can
- * check, and an unchecked photo must never reach a paid call.
- * The server re-runs the gate on the raw measurements regardless,
- * so nothing here is trusted.
+ * detector (Shape Detection API) when it exists, and otherwise
+ * from MediaPipe Tasks Vision running on this site's own WASM
+ * and model files; if measurement itself fails, the panel
+ * refuses on screen with the reason, because the capture gate
+ * needs a measurement it can check, and an unchecked photo must
+ * never reach a paid call. The server re-runs the gate on the
+ * raw measurements regardless, so nothing here is trusted.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   checkCapture,
   type CaptureMeasurement,
 } from "../../lib/decision/capture.ts";
+import { faceShareText } from "../../lib/ui/fixture-session.ts";
 import type { Receipt } from "../../lib/decision/decision.ts";
 import { buildReceiptView } from "../../lib/ui/receipt-view.ts";
 import ReceiptSection from "./ReceiptSection";
@@ -182,6 +185,8 @@ async function preparePhoto(file: File): Promise<PreparedPhoto> {
   return { blob, measurement };
 }
 
+const LIVE_USED_STORAGE_KEY = "shadeveto-live-used";
+
 export default function LiveCheck() {
   const [passcode, setPasscode] = useState("");
   const [ownedHex, setOwnedHex] = useState("");
@@ -191,6 +196,41 @@ export default function LiveCheck() {
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  // Photo measurement is asynchronous (the detector loads WASM and
+  // a model file), so it gets its own visible state: without it the
+  // panel sat silent for seconds after an upload and a detector
+  // failure looked exactly like a dead button.
+  const [measuring, setMeasuring] = useState(false);
+  const [photoName, setPhotoName] = useState<string | null>(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(
+    null,
+  );
+  const [detectError, setDetectError] = useState<string | null>(null);
+  // The panel copy promises ONE real reading; the server cap (60
+  // units per session) is looser than that promise, so the panel
+  // itself retires the button after one paid reading and says so.
+  const [liveUsed, setLiveUsed] = useState(false);
+  const receiptRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      if (window.sessionStorage.getItem(LIVE_USED_STORAGE_KEY) === "1") {
+        setLiveUsed(true);
+      }
+    } catch {
+      // Storage can be unavailable (private modes); the in-page
+      // state still covers the common case.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (receipt !== null) {
+      receiptRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [receipt]);
 
   const gate =
     prepared !== null ? checkCapture(prepared.measurement) : null;
@@ -201,11 +241,23 @@ export default function LiveCheck() {
     setMessage(null);
     setPending(false);
     setPrepared(null);
+    setDetectError(null);
+    setMeasuring(false);
+    if (photoPreviewUrl !== null) {
+      URL.revokeObjectURL(photoPreviewUrl);
+      setPhotoPreviewUrl(null);
+    }
+    setPhotoName(null);
     if (!file) return;
     if (file.type !== "image/jpeg" && file.type !== "image/png") {
       setMessage("Live checks accept JPG or PNG photos only.");
       return;
     }
+    // Show the chosen photo straight away, before measurement, so
+    // the panel acknowledges the upload even if detection fails.
+    setPhotoName(file.name);
+    setPhotoPreviewUrl(URL.createObjectURL(file));
+    setMeasuring(true);
     try {
       setPrepared(await preparePhoto(file));
     } catch (error) {
@@ -213,9 +265,11 @@ export default function LiveCheck() {
       // here is what made the Oct 28-29 measurement failures
       // undiagnosable for four attempts.
       console.error("LiveCheck photo measurement failed:", error);
-      setMessage(
-        "That photo could not be measured in this browser. Check your connection and try again with the same photo.",
+      setDetectError(
+        "Face detection could not run in this browser, so this photo was not measured and no live check can start from it. Nothing was spent. Check your connection and try the same photo again, or use fixture mode above.",
       );
+    } finally {
+      setMeasuring(false);
     }
   }
 
@@ -229,16 +283,30 @@ export default function LiveCheck() {
       });
       const reply = (await res.json()) as LiveReply;
       if (reply.mode === "fixture") {
+        // The server answers a missing OR a wrong passcode with the
+        // same fixture marker, on purpose. The panel still knows
+        // what was typed, so it can say which case this is instead
+        // of leaving the click unexplained.
         setPending(false);
         setReceipt(null);
         setMessage(
-          "Live mode did not start for this session. Fixture mode above is unaffected and spends nothing.",
+          passcode.trim() === ""
+            ? "Live mode needs the judge passcode. Enter it above and try again. Nothing was spent."
+            : "That passcode was not accepted, so live mode did not start. Check the passcode and try again. Nothing was spent.",
         );
         return;
       }
       if (reply.outcome === "receipt") {
         setPending(false);
         setReceipt(reply.receipt);
+        if (reply.receipt.unitsSpent > 0) {
+          setLiveUsed(true);
+          try {
+            window.sessionStorage.setItem(LIVE_USED_STORAGE_KEY, "1");
+          } catch {
+            // See the mount effect: storage is best-effort only.
+          }
+        }
         return;
       }
       setPending(reply.outcome === "pending");
@@ -255,7 +323,7 @@ export default function LiveCheck() {
   }
 
   function run() {
-    if (!prepared) return;
+    if (!prepared || liveUsed) return;
     const form = new FormData();
     form.set("passcode", passcode);
     form.set("faceDetected", String(prepared.measurement.faceDetected));
@@ -307,16 +375,27 @@ export default function LiveCheck() {
             />
           </label>
         </div>
-        {prepared !== null ? (
+        {measuring ? (
+          <p className="face-share" aria-live="polite">
+            Detecting face...
+          </p>
+        ) : detectError !== null ? (
+          <p className="form-error" role="alert">
+            {detectError}
+          </p>
+        ) : prepared !== null ? (
           <p className="face-share">
-            Face fills{" "}
-            {prepared.measurement.faceDetected
-              ? `${Math.round(
-                  (prepared.measurement.faceWidthPx /
-                    prepared.measurement.imageWidthPx) *
-                    100,
-                )}% of the photo width.`
-              : "no face in this photo."}
+            {faceShareText(prepared.measurement)}
+          </p>
+        ) : null}
+        {photoPreviewUrl !== null ? (
+          <p className="photo-chosen">
+            <img
+              className="photo-preview"
+              src={photoPreviewUrl}
+              alt="Preview of the photo you chose"
+            />
+            <span>{photoName}</span>
           </p>
         ) : null}
         {gate !== null && !gate.ok ? (
@@ -342,7 +421,7 @@ export default function LiveCheck() {
               type="text"
               value={ownedHex}
               onChange={(event) => setOwnedHex(event.target.value)}
-              placeholder="#A77D60"
+              placeholder="Example: #A77D60"
             />
           </label>
           <label>
@@ -351,7 +430,7 @@ export default function LiveCheck() {
               type="text"
               value={ownedName}
               onChange={(event) => setOwnedName(event.target.value)}
-              placeholder="My current foundation"
+              placeholder="Example: My current foundation"
             />
           </label>
         </div>
@@ -361,10 +440,24 @@ export default function LiveCheck() {
         type="button"
         className="run-button"
         onClick={run}
-        disabled={busy || prepared === null}
+        disabled={busy || measuring || prepared === null || liveUsed}
+        aria-busy={busy}
       >
-        Run the live check (spends 20 units)
+        {busy ? (
+          <>
+            Running...
+            <span className="spinner" aria-hidden="true" />
+          </>
+        ) : (
+          "Run the live check (spends 20 units)"
+        )}
       </button>
+      {liveUsed ? (
+        <p className="live-used-note">
+          One live reading used for this session. Fixture mode above
+          still works and spends nothing.
+        </p>
+      ) : null}
       {pending ? (
         <button type="button" className="run-button" onClick={resume} disabled={busy}>
           Check for the pending reading
@@ -377,10 +470,9 @@ export default function LiveCheck() {
       ) : null}
 
       {view !== null ? (
-        <ReceiptSection
-          view={view}
-          rankingHeading="Full ranking, closest first"
-        />
+        <div ref={receiptRef} className="live-receipt">
+          <ReceiptSection view={view} rankingHeading="Ranking, closest first" />
+        </div>
       ) : null}
     </div>
   );

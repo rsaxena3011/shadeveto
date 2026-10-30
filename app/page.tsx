@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function HomePage() {
   return (
     <div className="landing">
@@ -14,6 +16,11 @@ export default function HomePage() {
           preview only: it is not run in the shipped check flow and
           never feeds a verdict. Built on the YouCam API.
         </p>
+        <p>
+          <Link href="/check" className="hero-cta">
+            Start a check
+          </Link>
+        </p>
       </section>
 
       <section id="how" className="how">
@@ -22,9 +29,11 @@ export default function HomePage() {
           <li>
             <strong>Capture.</strong> In fixture mode, pick a study
             face and a framing scenario; in live mode, upload a photo
-            file and let the browser&apos;s built-in face detector
-            measure it, with a plain refusal where no detector exists.
-            There is no colour-cast warning in the shipped flow.
+            file and let the in-browser face detector measure it:
+            MediaPipe running on this site&apos;s own files, or the
+            browser&apos;s built-in detector where one exists, with
+            a plain refusal where measurement fails. There is no
+            colour-cast warning in the shipped flow.
           </li>
           <li>
             <strong>Colour.</strong> One skin-tone reading, ranked

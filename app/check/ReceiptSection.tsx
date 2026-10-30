@@ -1,11 +1,21 @@
+"use client";
+
 /**
  * The receipt screen, shared by fixture mode and live mode. It
  * renders only the receipt view model (lib/ui/receipt-view.ts),
  * which itself only copies engine output: no verdict, distance,
  * margin or threshold is computed in this component or below it.
+ *
+ * The ranking can run to the full licensed catalog (617 rows in
+ * live mode), so it renders the top 10 by default with a toggle
+ * for the full list. Slicing for display is the only thing the
+ * toggle does; every row still comes from the view model.
  */
 
+import { useState } from "react";
 import type { ReceiptView } from "../../lib/ui/receipt-view.ts";
+
+const RANKING_PREVIEW_COUNT = 10;
 
 export default function ReceiptSection({
   view,
@@ -14,6 +24,10 @@ export default function ReceiptSection({
   view: ReceiptView;
   rankingHeading: string;
 }) {
+  const [showAllRanking, setShowAllRanking] = useState(false);
+  const rankingRows = showAllRanking
+    ? view.rankingRows
+    : view.rankingRows.slice(0, RANKING_PREVIEW_COUNT);
   return (
     <section className="receipt" aria-label="Decision receipt">
       <p className="fixture-banner">{view.fixtureLabel}</p>
@@ -47,7 +61,7 @@ export default function ReceiptSection({
               </tr>
             </thead>
             <tbody>
-              {view.rankingRows.map((row) => (
+              {rankingRows.map((row) => (
                 <tr key={row.position}>
                   <td>{row.position}</td>
                   <td>{row.shadeLabel}</td>
@@ -64,6 +78,17 @@ export default function ReceiptSection({
               ))}
             </tbody>
           </table>
+          {view.rankingRows.length > RANKING_PREVIEW_COUNT ? (
+            <button
+              type="button"
+              className="ranking-toggle"
+              onClick={() => setShowAllRanking((value) => !value)}
+            >
+              {showAllRanking
+                ? `Show top ${RANKING_PREVIEW_COUNT} only`
+                : `Show all ${view.rankingRows.length}`}
+            </button>
+          ) : null}
         </>
       ) : null}
 
